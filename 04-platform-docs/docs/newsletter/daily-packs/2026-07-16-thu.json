@@ -1,0 +1,23 @@
+{
+ "_schema": "daily-light-v1",
+ "_note": "목요일 · 큐레이션('이번 주 이 책', 레벨/무드별) → 진단·다이어리. 블록=book.",
+ "issue": { "no": 4, "date": "2026.07.16 (목)", "weekday": "thu" },
+ "hero": { "url": null, "alt": "" },
+ "kicker": "이번 주 이 책",
+ "headline": "여름밤에 어울리는, 처음 완독하기 좋은 한 권",
+ "lede": "영어 레벨 2~3, '짧고 따뜻한 이야기'가 당길 때 골라보세요.",
+ "blocks": [
+  { "type": "book",
+    "cover": "https://pub-f4c490e22e384c7e9b95fc9648cb5f4c.r2.dev/illust/hp-nl/day05_hero.png",
+    "title_en": "The Little Prince",
+    "title_ko": "어린 왕자",
+    "why": "문장이 짧고 다정해서 원서 첫 완독으로 자주 성공하는 책이에요. 하루 3쪽이면 3주 안에 마지막 장을 덮게 됩니다." }
+ ],
+ "cta": { "label": "이 책이 내 레벨에 맞는지 확인하기", "url": "https://read.literstella.co.kr", "sub": "진단 후 다이어리에 바로 담아 하루 3쪽부터" },
+ "anchor": {
+  "id": "little-prince-005",
+  "book_ko": "《어린 왕자》 · 오늘의 한 문장",
+  "sentence_en": "What is essential is invisible to the eye.",
+  "tag": "3분 05초"
+ }
+}

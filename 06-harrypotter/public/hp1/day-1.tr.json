@@ -1,0 +1,77 @@
+{
+ "_note": "HP Day EN 사이드카. 원문 day-N.json 무수정. ⚠️ 원작(J.K. Rowling)의 번역이 아니라 리터스텔라 자체 한국어 재서술·해설의 영어화(English retelling/commentary) — 원문 문장 미복제. 매핑: chapter←chapterKo · intro←intro · scenes[i]←scenes[i].body · sceneTitles[i]←scenes[i].title · sceneAfters[i]←scenes[i].after · readingTitle · reading[]←reading[] · pullquote · essay[]←essay[] · vocab[i]{pos,def,note}←vocab[i]{pos,ko,note}(w=영어 헤드워드는 원본 유지) · teaser←teaser.text. sentenceEn/source/pages는 이미 영어라 미포함, sentenceKo는 sentenceEn이 곧 영어라 제외.",
+ "en": {
+  "chapter": "The Story Begins — The Secret of Number Four, Privet Drive",
+  "intro": "Starting today, a magical hundred days begins at number four, Privet Drive — the opening chapter of Harry Potter and the Sorcerer's Stone arrives. Ten minutes a day, in the original English, with the story's context intact. Here we go!",
+  "scenes": [
+   "At number four, Privet Drive, the Dursley family takes enormous pride in one thing above all: being utterly ordinary. Mr. Dursley is a heavy man whose neck has almost vanished into his shoulders, while Mrs. Dursley's neck is twice as long as anyone else's, which suits her nicely, since she loves nothing more than craning it over the garden fence to spy on the neighbors. And then there is Dudley, their son, who is, in their eyes, the finest little boy in all the world.",
+   "It is a gray, gloomy Tuesday morning. Dudley is squirming and shrieking, refusing to sit still in his high chair, and his parents wrestle with him as the day begins like any other. But as Mr. Dursley reaches the corner of the street on his way to work, he notices the first strange sign.",
+   "He calms himself with some effort and drives on into town. Yet as he sits trapped in a wall of traffic, another sight catches his eye, one he simply cannot bear: people in peculiar cloaks, huddled together and whispering."
+  ],
+  "sceneTitles": [
+   "A Thoroughly Normal Family",
+   "A Strange Tuesday Begins",
+   "The People in Emerald Cloaks"
+  ],
+  "sceneAfters": [
+   "But they are hiding one big secret — a secret they want nothing strange or mysterious tangled up in. It is the existence of the Potters, the family of Mrs. Dursley's sister.",
+   "",
+   "Someone older than himself, wearing an emerald cloak! Mr. Dursley works hard to convince himself it must be some silly stunt to raise money. But are these strange happenings really just his imagination?"
+  ],
+  "readingTitle": "Stella's Close Reading",
+  "reading": [
+   "This sentence is the deeply symbolic opening line that raises the curtain on the whole vast world of Harry Potter. When the book first came out in Britain, the author released it as 'Philosopher's Stone,' but the American publisher changed it to 'Sorcerer's Stone' to convey the feeling of magic more directly to children. Reading with that difference in mind lets you enjoy the subtle flavor of both editions.",
+   "The most delightful part of this opening line is the \"Thank you very much\" tacked on right after \"perfectly normal.\" Ordinary is just ordinary — so why be so proud of it, and why add a polite thank-you as if someone had just paid them a compliment?",
+   "As you read Harry Potter in the original, you start to notice how specific action verbs like wrestle and jerk, and the way prepositions are used, paint a scene right before your eyes. It is the process of building an English circuit of its own, not a circuit running on your native language."
+  ],
+  "pullquote": "It is exactly this excessive obsession with being ordinary that sets up a powerful contrast with all the abnormal, magical things about to come crashing in.",
+  "essay": [
+   "Magic that comes barging in on the dullest, most ordinary day. This first page paints the most everyday scene imaginable: a boring Tuesday morning commute, a crying child, a man picking out his tie.",
+   "But the moment you turn the corner, some inexplicable, strange sign may be lying in wait in your own daily life too — like a tabby cat reading a map.",
+   "Look forward to seeing how the magic of Harry Potter rewires your English over the next hundred days."
+  ],
+  "vocab": [
+   {
+    "pos": "v.",
+    "def": "to stretch out your neck (to see something better)",
+    "note": "The verb comes from 'crane,' the long-necked bird. Picture the bird and the meaning follows."
+   },
+   {
+    "pos": "adj.",
+    "def": "big and burly, heavyset",
+    "note": "Think of 'beef.' The image is far more vivid than fat."
+   },
+   {
+    "pos": "v.",
+    "def": "to shiver or tremble with fear or disgust",
+    "note": "For when just thinking about it is awful."
+   },
+   {
+    "pos": "adj.",
+    "def": "overcast, gloomy, drab",
+    "note": "Often attached to weather, as in 'dull, gray weather'."
+   },
+   {
+    "pos": "v.",
+    "def": "to struggle or grapple with something",
+    "note": "Picture struggling to get a screaming toddler into a chair."
+   },
+   {
+    "pos": "n.",
+    "def": "a fit of temper (typically a child's)",
+    "note": "Memorize it whole as 'have a tantrum'."
+   },
+   {
+    "pos": "adj.",
+    "def": "strange, odd, unusual",
+    "note": "With -thing nouns the adjective goes after, as in 'something peculiar'."
+   },
+   {
+    "pos": "v.",
+    "def": "to move with a sudden, sharp motion",
+    "note": "The original English is rich in action verbs like this."
+   }
+  ],
+  "teaser": "One ominous word keeps circling in Mr. Dursley's head. \"That man named Potter — the boy's name was Harry... wasn't it?\""
+ }
+}

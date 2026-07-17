@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "literstella-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-17",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // ⚠️ 미배포 스캐폴딩. 포트원 승인 후 배포. 모든 위험 기능은 아래 플래그(기본 false) 뒤에 있음.
+  "vars": {
+    "ADMIN_API_ENABLED": "false",   // #8b 관리자 service_role 라우트 — 켤 때 true
+    "PAYMENT_ENABLED": "false",      // 포트원 결제 라우트 — 켤 때 true
+    "SUPABASE_URL": "https://bvhkvucsoetktoxzupwt.supabase.co",
+    "ADMIN_EMAIL": "literbryanbae@gmail.com",
+    // OTP·알림 메일 발신자 — Resend 인증한 @literstella.co.kr 도메인이라 임의 수신자에게 도달.
+    // (미설정 시 코드 폴백 onboarding@resend.dev = 본인 메일만). local-part는 원하면 변경 가능.
+    "RESEND_FROM": "리터스텔라 <noreply@literstella.co.kr>",
+    // 포트원 공개값(비밀 아님 — 프론트에도 노출되는 값)
+    "PORTONE_STORE_ID": "store-464ff242-c317-4693-96c2-1052658e14b7",
+    "PORTONE_BILLING_CHANNEL_KEY": "channel-key-3917d309-e69b-44b6-a0d5-2c7e3b727165",
+    // CORS 허용 Origin (쉼표구분) — 프론트 도메인만
+    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr"
+  },
+
+  // 배포 시 secret으로 주입 (wrangler secret put <NAME>):
+  //   SUPABASE_SERVICE_ROLE_KEY  — service_role (브라우저 노출 금지)
+  //   OTP_SECRET                 — diag Worker와 동일 값(회원가입·관리자 OTP 토큰 서명/검증 공유) ★회원가입 필수
+  //   ADMIN_SECRET               — 관리자 세션 토큰 서명용
+  //   PORTONE_API_SECRET         — 포트원 V2 서버 API Secret
+  //   PORTONE_WEBHOOK_SECRET     — 포트원 웹훅 서명 검증
+  //   RESEND_API_KEY             — 회원가입 OTP·문의 메일 발송(diag Worker 키 재사용 가능) ★회원가입 필수
+  //   RESEND_FROM (선택, var/secret) — 발신자. 미설정 시 onboarding@resend.dev(무료=본인메일만). 도메인 인증 후 인증@literstella.co.kr
+
+  // 자동갱신 Cron (PAYMENT_ENABLED + 빌링키 도입 후 주석 해제):
+  // "triggers": { "crons": ["0 0 * * *"] },
+
+  "observability": { "enabled": true }
+}

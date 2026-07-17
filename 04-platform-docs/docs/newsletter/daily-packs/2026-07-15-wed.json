@@ -1,0 +1,23 @@
+{
+ "_schema": "daily-light-v1",
+ "_note": "수요일 · 독자 이야기(인증·완독 후기·독자가 고른 문장) → 챌린지. 블록=quote + p.",
+ "issue": { "no": 3, "date": "2026.07.15 (수)", "weekday": "wed" },
+ "hero": { "url": null, "alt": "" },
+ "kicker": "이번 주 독자의 한 문장",
+ "headline": "혼자 읽던 새벽이, 함께 읽는 아침이 됐어요",
+ "lede": "이번 주 챌린지 참가자 한 분이 골라 보내주신 문장과 짧은 후기예요.",
+ "blocks": [
+  { "type": "quote",
+    "en": "It is our choices that show what we truly are, far more than our abilities.",
+    "ko": "우리가 진짜 어떤 사람인지는 능력보다 선택이 보여준다.",
+    "by": "헤이렌 님 · 야나완 챌린지 32일째" },
+  { "type": "p", "text": "\"작심삼일만 반복하던 제가, 오늘 아침 인증 32번째를 눌렀어요. 잘 읽어서가 아니라 그냥 매일 열었을 뿐인데 어느새 습관이 됐네요.\"" }
+ ],
+ "cta": { "label": "나도 오늘 한 줄 인증하기", "url": "https://challenge.literstella.co.kr", "sub": "영어 챌린지 야나완™ · 함께 읽는 분들이 지금도 인증 중" },
+ "anchor": {
+  "id": "hp1-002",
+  "book_ko": "《해리포터와 마법사의 돌》 · Day 2",
+  "sentence_en": "...this happy, happy day!",
+  "tag": "1분 40초"
+ }
+}

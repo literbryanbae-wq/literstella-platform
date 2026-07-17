@@ -1,0 +1,101 @@
+{
+ "book": {
+  "id": "hp1",
+  "series_no": 1,
+  "title_en": "Harry Potter and the Sorcerer's Stone",
+  "title_ko": "해리포터와 마법사의 돌",
+  "author": "J.K. Rowling",
+  "year": 1997,
+  "total_days": 100,
+  "media_type": "live",
+  "brand_note": "HP 상표=유료 상품명 사용 금지. 본문0%·강의100%. 1권=5년 전 강독(품질 주의).",
+  "free_reading_playlist": "https://youtube.com/playlist?list=PLARsitvDhfaKdd7XctJriviiskDgGXHxI",
+  "club_url": "https://cafe.naver.com/literenglish/25286",
+  "workbook_url": "https://drive.google.com/file/d/1xNOPkGLXnOskmILbIZThoQbPwVztHXxU/view",
+  "class_5step_url": "https://class.literstella.co.kr/p/new-5",
+  "cafe_url": "https://cafe.naver.com/literenglish"
+ },
+ "day": 4,
+ "pages": "p.10-12",
+ "season": "Spring 2026",
+ "chapter": {
+  "no": "I",
+  "title_en": "The Boy Who Lived",
+  "title_ko": "이야기의 전개 — 마법사들의 대화"
+ },
+ "intro": "오늘부터 프리벳가 4번지에서 시작되는 마법 같은 100일, 해리포터와 마법사의 돌의 네 번째 이야기가 도착합니다. 하루 10분 — 원서 그대로, 스토리 맥락 그대로. 자 시작합니다.!",
+ "scenes": [
+  {
+   "no": 1,
+   "title": "서로 다른 두 마법사의 대화",
+   "body": "어둠 속 프리벳가에서 만난 덤블도어와 맥고나걸 교수는 머글들이 알아차릴 정도로 부주의했던 마법 세계의 축제 분위기에 대해 대화를 나눕니다. 매사 차분하고 느긋한 덤블도어와 달리, 맥고나걸 교수는 날카롭고 조급한(impatiently) 태도를 보입니다."
+  },
+  {
+   "no": 2,
+   "title": "볼드모트, 그 이름을 부르다",
+   "body": "맥고나걸 교수가 \"그 사람(You-Know-Who)\"이라 부르며 두려워하는 존재. 하지만 덤블도어는 그의 진짜 이름인 '볼드모트(Voldemort)'를 똑바로 부르라고 설득하며 평온하게 레몬 드롭 사탕을 권합니다."
+  },
+  {
+   "no": 3,
+   "title": "충격적인 슬픈 소식",
+   "body": "마침내 대화는 가장 무거운 주제로 향합니다. 볼드모트가 릴리와 제임스 포터 부부를 살해했다는 소문. 숨이 턱 막힌(gasped) 맥고나걸 교수에게 덤블도어는 슬프게 고개를 끄덕입니다. 하지만 더 놀라운 사실은, 볼드모트가 그들의 아들인 아기 '해리 포터'를 죽이려다 실패하고 오히려 자신의 힘을 잃은 채 사라졌다는 믿기 힘든(astounding) 이야기입니다."
+  }
+ ],
+ "one_sentence": {
+  "en": "It's lucky it's dark. I haven't blushed so much since Madam Pomfrey told me she liked my new earmuffs.",
+  "source": "Harry Potter and the Sorcerer's Stone, Chapter I · p.11"
+ },
+ "one_line_translation": "\"어두워서 다행이네요. 폼프리 부인이 내 새 귀마개가 마음에 든다고 한 이후로 이렇게 얼굴이 붉어진(blushed) 적이 없었거든요.\"",
+ "sentence_reading": [
+  "자신이 유일하게 볼드모트가 두려워하는 마법사라는 맥고나걸의 칭찬(flatter)에 대한 덤블도어의 대답입니다. 세계관 최고 마법사의 입에서 나오는 대답치고는 참 엉뚱하면서도 유머러스하죠.",
+  "작가는 두 인물의 성격을 묘사할 때 '어떤 부사'를 사용하는지 세밀하게 설계했습니다. 맥고나걸 교수의 대사 뒤에는 impatiently(조급하게), coldly(차갑게), sharply(날카롭게)가 붙지만, 덤블도어의 행동은 calmly(차분하게), gently(부드럽게) 묘사됩니다. 이러한 부사의 대비를 통해 우리는 인물의 심리와 성격을 더욱 입체적으로 느낄 수 있습니다."
+ ],
+ "essay": [
+  "엄청난 비극과 놀라운 소식이 교차하는 순간에도 덤블도어 교수는 평정을 잃지 않습니다. 두려운 이름을 똑바로 부르고, 레몬 사탕을 권하며, 칭찬 앞에서는 농담으로 받아넘기는 그의 여유로움.",
+  "우리는 종종 두려움에 사로잡혀 문제를 직시하지 못할 때가 있습니다(마치 You-Know-Who라고 부르는 것처럼 말이죠). 진짜 힘은 상황에 압도되지 않고 유머를 잃지 않는 단단한 마음에서 나오는 것 아닐까요?"
+ ],
+ "vocab": [
+  {
+   "word": "flatter",
+   "meaning": "치켜세우다, 비행기 태우다 (아첨하다)"
+  },
+  {
+   "word": "blush",
+   "meaning": "(부끄럽거나 쑥스러워서) 얼굴을 붉히다"
+  },
+  {
+   "word": "astounding",
+   "meaning": "믿기 어려운, 경악할 만한"
+  }
+ ],
+ "teaser": {
+  "day": 5,
+  "text": "마침내 하늘을 나는 오토바이를 타고 아기 해리가 도착합니다. \"흉터가 남은 아기를 문가에 둔 채, 그들은 조용히 밤 속으로 사라집니다.\""
+ },
+ "media": {
+  "story_video": {
+   "title": "오늘을 여는 3분 스토리 영상",
+   "desc": "DAY04 마법사들의 대화 그리고 슬픈 소식",
+   "url": "https://youtu.be/sKaMdjgHo_A"
+  },
+  "intro_audio": {
+   "title": "오늘을 기억하는 1분 영어 오디오",
+   "desc": "Day04 해리포터로 암기 없이 실전 영어가 터지는 비결",
+   "url": "https://drive.google.com/file/d/1a_PG4_LGewTLEFGfvWbfOQ92W2tQxgTX/view"
+  },
+  "detail_audio": {
+   "title": "10분 상세 해설 오디오",
+   "desc": "Day04 인물의 성격을 드러내는 영어 부사의 힘",
+   "url": "https://drive.google.com/file/d/16c_6q400FVHnwWXUSdj7mzEmi21nXALg/view"
+  },
+  "pdf": {
+   "desc": "DAY04 PDF",
+   "url": "https://drive.google.com/file/d/1NZp7xqKHv9jABHKABeW6wnn68jCyVrOi/view"
+  },
+  "free_reading_video": {
+   "desc": "리터스텔라 스토리텔링 원서 무료 강독 - 해리포터 1권 DAY04",
+   "url": "https://youtu.be/KInBE69u4aw"
+  }
+ },
+ "_warnings": []
+}

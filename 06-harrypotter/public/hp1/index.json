@@ -1,0 +1,36 @@
+{
+ "book": "해리포터와 마법사의 돌",
+ "bookEn": "Harry Potter and the Sorcerer's Stone",
+ "author": "J.K. Rowling",
+ "totalDays": 100,
+ "days": [
+  {
+   "day": 1,
+   "pages": "p.1-3",
+   "sentenceEn": "Mr. and Mrs. Dursley, of number four, Privet Drive, were proud to say that they were perfectly normal, thank you very much.",
+   "hasAudio": true,
+   "illustration": "https://pub-f4c490e22e384c7e9b95fc9648cb5f4c.r2.dev/illust/hp-nl/day01_hero.png"
+  },
+  {
+   "day": 2,
+   "pages": "p.4-6",
+   "sentenceEn": "Even Muggles like yourself should be celebrating, this happy, happy day!",
+   "hasAudio": true,
+   "illustration": "https://pub-f4c490e22e384c7e9b95fc9648cb5f4c.r2.dev/illust/hp-nl/day02_hero.png"
+  },
+  {
+   "day": 3,
+   "pages": "p.7-9",
+   "sentenceEn": "A man appeared on the corner the cat had been watching, appeared so suddenly and silently you'd have thought he'd just popped out of the ground.",
+   "hasAudio": true,
+   "illustration": "https://pub-f4c490e22e384c7e9b95fc9648cb5f4c.r2.dev/illust/hp-nl/day03_hero.png"
+  },
+  {
+   "day": 4,
+   "pages": "p.10-12",
+   "sentenceEn": "It's lucky it's dark. I haven't blushed so much since Madam Pomfrey told me she liked my new earmuffs.",
+   "hasAudio": true,
+   "illustration": "https://pub-f4c490e22e384c7e9b95fc9648cb5f4c.r2.dev/illust/hp-nl/day04_hero.png"
+  }
+ ]
+}

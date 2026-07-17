@@ -1,0 +1,50 @@
+{
+ "_note": "HP Day EN 사이드카. 원문 day-N.json 무수정. ⚠️ 원작(J.K. Rowling)의 번역이 아니라 리터스텔라 자체 한국어 재서술·해설의 영어화(English retelling/commentary) — 원문 문장 미복제. 매핑: chapter←chapterKo · intro←intro · scenes[i]←scenes[i].body · sceneTitles[i]←scenes[i].title · sceneAfters[i]←scenes[i].after · readingTitle · reading[]←reading[] · pullquote · essay[]←essay[] · vocab[i]{pos,def,note}←vocab[i]{pos,ko,note}(w=영어 헤드워드는 원본 유지) · teaser←teaser.text. sentenceEn/source/pages는 이미 영어라 미포함, sentenceKo는 sentenceEn이 곧 영어라 제외.",
+ "en": {
+  "chapter": "The Story Unfolds — Two Wizards Talking",
+  "intro": "Starting today at number four, Privet Drive, a magical hundred days begins — and the fourth story of Harry Potter and the Sorcerer's Stone arrives. Ten minutes a day, straight from the original book, right in the flow of the story. Here we go!",
+  "scenes": [
+   "In the darkness of Privet Drive, Dumbledore and Professor McGonagall meet and talk about the wizarding world's celebrations, which have been careless enough that even Muggles have begun to notice. Dumbledore stays calm and unhurried through it all, while Professor McGonagall is sharp and impatient beside him.",
+   "There is someone Professor McGonagall fears so much that she will only call him You-Know-Who. Dumbledore, however, urges her to use his real name, Voldemort, and calmly offers her a lemon drop.",
+   "At last the conversation turns to the heaviest matter of all: the rumor that Voldemort has killed Lily and James Potter. Professor McGonagall gasps, and Dumbledore nods sadly. But there is something even more astounding: Voldemort tried to kill their baby son, Harry Potter, and failed, and instead lost his own power and vanished."
+  ],
+  "sceneTitles": [
+   "Two Very Different Wizards, One Conversation",
+   "Saying the Name: Voldemort",
+   "The Shocking, Sorrowful News"
+  ],
+  "sceneAfters": [
+   "",
+   "",
+   ""
+  ],
+  "readingTitle": "Stella's Close Reading",
+  "reading": [
+   "This is Dumbledore's reply when McGonagall flatters him by saying he is the only wizard Voldemort ever feared. For the greatest wizard in this world, it's a wonderfully offbeat and funny thing to say.",
+   "The author designed, with great care, exactly which adverbs she attaches to each character. McGonagall's lines come with impatiently, coldly, sharply — while Dumbledore's actions are described as calmly, gently. Through that contrast of adverbs, we feel each character's mind and personality in three dimensions."
+  ],
+  "pullquote": "",
+  "essay": [
+   "Even in a moment where terrible tragedy and astonishing news cross paths, Professor Dumbledore never loses his composure. He says the feared name plainly, offers a lemon drop, and turns a compliment aside with a joke — that is his ease.",
+   "We often get so caught up in fear that we can't look a problem in the eye (rather like saying You-Know-Who instead of the name). Doesn't real strength come from a steady heart that isn't overwhelmed by the situation and doesn't lose its sense of humor?"
+  ],
+  "vocab": [
+   {
+    "pos": "",
+    "def": "to praise someone excessively, often to please or win favor",
+    "note": ""
+   },
+   {
+    "pos": "",
+    "def": "to turn red in the face from embarrassment or shyness",
+    "note": ""
+   },
+   {
+    "pos": "",
+    "def": "hard to believe; amazing, astonishing",
+    "note": ""
+   }
+  ],
+  "teaser": "At last, baby Harry arrives on a flying motorbike. \"Leaving the scarred baby on the doorstep, they slip quietly away into the night.\""
+ }
+}

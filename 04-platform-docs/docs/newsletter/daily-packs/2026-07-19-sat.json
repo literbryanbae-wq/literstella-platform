@@ -1,0 +1,22 @@
+{
+ "_schema": "daily-light-v1",
+ "_note": "주말 · 퀴즈/밈/가벼운 낭독 챌린지 → 가볍게. 블록=quiz.",
+ "issue": { "no": 6, "date": "2026.07.19 (토)", "weekday": "sat" },
+ "hero": { "url": null, "alt": "" },
+ "kicker": "주말 한 판",
+ "headline": "원서에서 툭 튀어나오는 이 단어, 무슨 뜻일까요?",
+ "lede": "커피 한 모금 하며 가볍게. 정답은 리더에서 그 문장을 만나면 바로 알게 돼요.",
+ "blocks": [
+  { "type": "quiz",
+    "q": "해리포터 첫 장에 나오는 'peculiar', 어떤 뜻에 가까울까요?",
+    "options": [ "평범한, 지루한", "이상한, 특이한", "완벽한, 정상적인" ],
+    "answer_hint": "힌트 — 더즐리 가족이 그토록 피하고 싶어 하던 바로 그 느낌이에요." }
+ ],
+ "cta": { "label": "이 단어 나오는 문장 리더에서 열기", "url": "https://challenge.literstella.co.kr", "sub": "탭 한 번이면 뜻과 예문까지" },
+ "anchor": {
+  "id": "hp1-001",
+  "book_ko": "《해리포터와 마법사의 돌》 · Day 1",
+  "sentence_en": "...they were perfectly normal, thank you very much.",
+  "tag": "1분 30초"
+ }
+}

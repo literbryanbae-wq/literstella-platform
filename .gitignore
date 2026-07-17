@@ -1,0 +1,28 @@
+# ── literstella-platform 백업 레포 — 반드시 제외 ──
+# PII (회원 실명·전화·이메일)
+shared-assets/members db/
+**/members db/
+seed-*class-enrollments.sql
+*roster*.sql
+# 시크릿
+.env
+.env.*
+**/.env
+**/.env.*
+**/SIGN_SECRET.txt
+*.pem
+*.key
+# 의존성·빌드 산출물·캐시
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.wrangler/
+**/.wrangler/
+**/.vitepress/cache/
+# git worktree(타 세션 작업본 — 자체 레포)
+02-challenge/stella-reader-wt/
+02-challenge/wide-ux-wt/
+# Drive 동기화 잔재
+.tmp.driveupload/
+**/.tmp.driveupload/

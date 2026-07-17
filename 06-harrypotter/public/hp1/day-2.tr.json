@@ -1,0 +1,51 @@
+{
+ "_note": "HP Day EN 사이드카. 원문 day-N.json 무수정. ⚠️ 원작(J.K. Rowling)의 번역이 아니라 리터스텔라 자체 한국어 재서술·해설의 영어화(English retelling/commentary) — 원문 문장 미복제. 매핑: chapter←chapterKo · intro←intro · scenes[i]←scenes[i].body · sceneTitles[i]←scenes[i].title · sceneAfters[i]←scenes[i].after · readingTitle · reading[]←reading[] · pullquote · essay[]←essay[] · vocab[i]{pos,def,note}←vocab[i]{pos,ko,note}(w=영어 헤드워드는 원본 유지) · teaser←teaser.text. sentenceEn/source/pages는 이미 영어라 미포함, sentenceKo는 sentenceEn이 곧 영어라 제외.",
+ "en": {
+  "chapter": "The Story Unfolds - The Day Mr. Dursley's Routine Went Wrong",
+  "intro": "Following on from yesterday, the strange Tuesday at number four, Privet Drive continues. The second installment of Harry Potter and the Sorcerer's Stone is here. Ten minutes a day - the original English, the story in its own context. Let's begin!",
+  "scenes": [
+   "While Mr. Dursley barks at people and works his way through his business calls, out on the street everyone is standing with their mouths hanging open, staring up at the sky. Owls are streaming overhead in ragged lines, sweeping past in broad daylight. But Mr. Dursley, being perfectly normal, makes a point of looking anywhere but at this strange sight.",
+   "He is about to walk right past them without a second thought when a few stray words reach his ears. The Potters, someone is saying. Yes, and their son, Harry. In that instant he stops as if frozen solid, and a huge wave of dread washes over him.",
+   "On his way home, lost in thought, Mr. Dursley collides with an old man in a purple cloak. Yet the old man, knocked off balance, does not get angry at all. Instead his face splits into an enormous smile, and he calls out to him."
+  ],
+  "sceneTitles": [
+   "Owls in Broad Daylight, and People in Cloaks",
+   "A Name Drifting Past His Ear: \"Harry\"",
+   "A Stranger's Embrace, and the Word \"Muggle\""
+  ],
+  "sceneAfters": [
+   "In the afternoon, stepping out to buy a doughnut, he runs into another huddle of cloaked strangers whispering suspiciously beside the bakery - and feels deeply, deeply uncomfortable.",
+   "",
+   "\"Because he's gone at last! Even Muggles should be celebrating today!\" Mr. Dursley stands frozen, caught in the arms of a total stranger. His perfectly ordinary life has now been utterly shattered."
+  ],
+  "readingTitle": "Stella's Close Reading",
+  "reading": [
+   "Here, at last, is the moment the symbolic word \"Muggle\" first surfaces in the ordinary world. For Mr. Dursley, a man who treats normalcy like a religion, being called a word he doesn't even know and pulled into a stranger's hug would have been, quite literally, a disaster - he is rattled to his core.",
+   "As you read in the original English, you start paying close attention to which verbs the author chooses to convey a character's anxiety and confusion. When he overhears that his nephew's name is Harry, he doesn't merely get surprised - he stopped dead, as if his feet were nailed to the ground; fear flooded him, washing over him like water; and he dashed back to his office.",
+   "Don't force yourself to memorize. Picture the gray, bewildering Tuesday Mr. Dursley is living through, breathe along with it, and these words will become yours all on their own."
+  ],
+  "pullquote": "Moments that in Korean might all flatten into simply \"he was surprised\" or \"he went back\" meet vivid, dynamic English verbs and come alive as one sharply drawn scene.",
+  "essay": [
+   "We often work hard to look away from the signs that change is coming. Just as Mr. Dursley dismissed a cat reading a map as a trick of the light, and tried every way he could to rationalize his nephew's name into some other name entirely.",
+   "But that joyful cry from a stranger on the street announces something: however tightly we hide behind ordinariness as a shield, an enormous event has already begun, and it cannot be avoided."
+  ],
+  "vocab": [
+   {
+    "pos": "",
+    "def": "to fly down swiftly and suddenly, the way a bird dives to snatch its prey",
+    "note": ""
+   },
+   {
+    "pos": "",
+    "def": "to unsettle or fluster someone; to shake them up (from the sense of shaking something so it clatters)",
+    "note": ""
+   },
+   {
+    "pos": "",
+    "def": "of an emotion or fear: to rush over someone all at once, like water pouring in",
+    "note": ""
+   }
+  ],
+  "teaser": "In the dead of night, a peculiar old gentleman appears at number four, Privet Drive. \"When he starts putting out the streetlamps one by one, the real magic finally begins.\""
+ }
+}

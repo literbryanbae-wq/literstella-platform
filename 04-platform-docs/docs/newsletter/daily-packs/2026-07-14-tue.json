@@ -1,0 +1,23 @@
+{
+ "_schema": "daily-light-v1",
+ "_note": "화요일 · 오늘의 표현(실용 단어/표현 1개, ≠문학 심화) → 리더·단어장. 블록=term.",
+ "issue": { "no": 2, "date": "2026.07.14 (화)", "weekday": "tue" },
+ "hero": { "url": null, "alt": "" },
+ "kicker": "오늘 써먹는 표현 하나",
+ "headline": "\"그럴 만도 하지\"를 영어로 한마디로",
+ "lede": "문학 해설은 잠깐 접어두고, 오늘 바로 입에 붙는 실용 표현 딱 하나만.",
+ "blocks": [
+  { "type": "term",
+    "en": "no wonder",
+    "ko": "그럴 만도 하다 / 어쩐지",
+    "example": "No wonder you're tired — you read until 2 a.m. (그럴 만도 하지, 새벽 2시까지 읽었잖아.)",
+    "tip": "원인을 듣고 '아, 그래서 그랬구나' 할 때. 문장 맨 앞에 붙이기만 하면 끝이에요." }
+ ],
+ "cta": { "label": "리더에서 이 표현 나오는 문장 만나기", "url": "https://challenge.literstella.co.kr", "sub": "단어를 탭하면 뜻 · 내 단어장에 바로 저장" },
+ "anchor": {
+  "id": "little-women-012",
+  "book_ko": "《작은 아씨들》 · 오늘의 한 문장",
+  "sentence_en": "I am not afraid of storms, for I am learning how to sail my ship.",
+  "tag": "2분 50초"
+ }
+}

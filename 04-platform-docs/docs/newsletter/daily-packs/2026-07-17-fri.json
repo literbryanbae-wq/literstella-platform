@@ -1,0 +1,20 @@
+{
+ "_schema": "daily-light-v1",
+ "_note": "금요일 · 스텔라 비하인드 / 강독·완독클럽 소식 → 강독·클럽. 블록=p.",
+ "issue": { "no": 5, "date": "2026.07.17 (금)", "weekday": "fri" },
+ "hero": { "url": "https://pub-f4c490e22e384c7e9b95fc9648cb5f4c.r2.dev/illust/hp-nl/day05_hero.png", "alt": "밤하늘의 프리벳가와 오토바이 실루엣" },
+ "kicker": "스텔라의 금요일 편지",
+ "headline": "같은 문장을 스무 번 읽으면 생기는 일",
+ "lede": "강독을 준비하며 제가 겪은 작은 이야기 하나 나눌게요.",
+ "blocks": [
+  { "type": "p", "text": "강독 한 편을 녹음하려면 같은 페이지를 스무 번 넘게 읽어요. 처음엔 뜻을 좇지만, 열 번쯤 넘어가면 문장의 '리듬'이 들리기 시작합니다." },
+  { "type": "p", "text": "여러분이 하루 3쪽을 매일 읽는 것도 똑같아요. 빨리 많이가 아니라, 같은 문장 앞에 자주 머무는 것 — 그게 영어 회로를 바꿉니다. 이번 주말, 완독 클럽에서 그 이야기를 더 나눌게요." }
+ ],
+ "cta": { "label": "클래식 원서 강독 둘러보기", "url": "https://class.literstella.co.kr", "sub": "완독 클럽 소식은 카페에서 · cafe.naver.com/literenglish" },
+ "anchor": {
+  "id": "hp1-005",
+  "book_ko": "《해리포터와 마법사의 돌》 · Day 5",
+  "sentence_en": "He will have that scar forever.",
+  "tag": "1분 15초"
+ }
+}

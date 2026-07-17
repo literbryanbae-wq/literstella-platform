@@ -1,0 +1,23 @@
+{
+ "_schema": "daily-light-v1",
+ "_note": "월요일 · 원서 소식/화제 큐레이션 → 진단·리더 유도. 블록=list(짧은 소식 3~4개).",
+ "issue": { "no": 1, "date": "2026.07.13 (월)", "weekday": "mon" },
+ "hero": { "url": null, "alt": "" },
+ "kicker": "이번 주 원서 소식",
+ "headline": "월요일 아침, 원서 세상 소식 한 줌",
+ "lede": "길게 안 읽어도 돼요. 오늘 알아두면 좋은 세 가지만 골랐습니다.",
+ "blocks": [
+  { "type": "list", "items": [
+   "해리포터 1권 100일 함께 읽기가 프리벳가 4번지에서 막 시작됐어요. 지금 합류해도 Day 1부터 다시 볼 수 있습니다.",
+   "여름 신간 원서가 궁금하다면 — 내 레벨에 맞는 책부터 찾는 게 먼저예요. 3분 진단이면 충분합니다.",
+   "원서를 처음 펼치는 분들이 가장 많이 고르는 첫 책 5권을 리더에 새로 담아뒀어요."
+  ] }
+ ],
+ "cta": { "label": "내 레벨에 맞는 첫 원서 찾기", "url": "https://read.literstella.co.kr", "sub": "무료 3분 진단 · MY READ TO SPEAK" },
+ "anchor": {
+  "id": "hp1-001",
+  "book_ko": "《해리포터와 마법사의 돌》 · Day 1",
+  "sentence_en": "...they were perfectly normal, thank you very much.",
+  "tag": "1분 30초"
+ }
+}

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiterStella - 5분간 1권 영어 원서 클래스</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <!-- Material Symbols -->
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+    
+    <script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              colors: {
+                // Light Mode (Reading Diagnosis Day System)
+                "background": "#fcfaf5",
+                "surface": "#fffdf8",
+                "on-surface": "#1d2433",
+                "primary": "#0d1f3c",
+                "primary-container": "#4b1822",
+                "secondary": "#746b5f",
+                "outline-variant": "rgba(29, 36, 51, 0.12)",
+                "gold": "#c8a84b",
+                
+                // Dark Mode (Mode 2)
+                "dark-bg": "#0b1326",
+                "dark-text": "#dae2fd",
+                "dark-primary": "#ffb59f",
+                "dark-primary-container": "#ff7043"
+              },
+              spacing: {
+                "container-max": "1200px",
+                "gutter": "24px",
+                "margin-mobile": "20px",
+                "margin-desktop": "64px",
+                "unit-md": "16px"
+              },
+              fontFamily: {
+                "sans": ["Inter", "Pretendard", "sans-serif"],
+                "serif": ["Playfair Display", "serif"]
+              }
+            }
+          }
+        }
+    </script>
+    <style>
+        .hidden { display: none !important; }
+        /* Smooth transitions for theme switching */
+        html { transition: background-color 0.3s ease, color 0.3s ease; }
+        body { transition: background-color 0.3s ease, color 0.3s ease; }
+        .tab-btn.active { color: #0d1f3c; border-bottom: 2px solid #0d1f3c; }
+        .dark .tab-btn.active { color: #ffb59f; border-bottom: 2px solid #ffb59f; }
+    </style>
+</head>
+<body class="bg-background dark:bg-dark-bg text-on-surface dark:text-dark-text font-sans antialiased">
+    <!-- Navigation -->
+    <nav class="bg-background/80 dark:bg-dark-bg/80 backdrop-blur-md border-b border-outline-variant dark:border-white/10 sticky top-0 z-50">
+        <div class="flex justify-between items-center w-full px-margin-mobile md:px-margin-desktop py-4 max-w-container-max mx-auto">
+            <!-- Brand Logo -->
+            <a class="flex items-center gap-2 hover:opacity-80 transition-all" href="#">
+                <img src="../shared-assets/logos/logo-symbol.png" alt="LiterStella Symbol" class="h-8 w-auto dark:invert transition-all duration-300">
+                <img src="../shared-assets/logos/logo-literstella-en.png" alt="LiterStella Wordmark" class="h-5 w-auto dark:invert transition-all duration-300 hidden sm:inline-block">
+            </a>
+            <!-- Desktop Links -->
+            <ul class="hidden md:flex items-center gap-8 text-sm font-bold text-secondary dark:text-dark-text/60">
+                <li><a class="hover:text-primary dark:hover:text-dark-primary transition-colors" href="../01-reading-diagnosis/literstella-reading-diagnosis/index.html">Programs</a></li>
+                <li><a class="hover:text-primary dark:hover:text-dark-primary transition-colors" href="../02-challenge/index.html">Challenge</a></li>
+                <li><a class="hover:text-primary dark:hover:text-dark-primary transition-colors" href="https://partner.literstella.co.kr">Coaching</a></li>
+            </ul>
+            <!-- Actions -->
+            <div class="flex items-center">
+                <button id="theme-toggle" class="p-2 text-secondary dark:text-dark-text/60 hover:text-primary dark:hover:text-dark-primary transition-colors mr-2" type="button">
+                    <span id="toggle-icon" class="material-symbols-outlined">dark_mode</span>
+                </button>
+                <a class="hidden md:inline-block bg-primary dark:bg-dark-primary text-white dark:text-dark-bg text-sm font-bold px-6 py-3 rounded-full hover:shadow-lg transition-all" href="../01-reading-diagnosis/literstella-reading-diagnosis/index.html">
+                    3-minute diagnosis
+                </a>
+                <button class="md:hidden text-on-surface dark:text-dark-text p-2 ml-2">
+                    <span class="material-symbols-outlined">menu</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main id="main">
+        <!-- Hero Section -->
+        <section class="py-24 md:py-32 px-margin-mobile md:px-margin-desktop max-w-container-max mx-auto text-center">
+            <!-- Emblem Placeholder -->
+            <div class="mb-12 flex justify-center">
+                <div class="w-20 h-20 md:w-24 md:h-24 bg-primary/5 dark:bg-dark-primary/10 rounded-full flex items-center justify-center border-2 border-primary/10 dark:border-dark-primary/20">
+                    <img src="../shared-assets/logos/logo-symbol.png" alt="Emblem" class="w-12 h-12 object-contain grayscale opacity-50 dark:opacity-80 dark:grayscale-0 dark:invert">
+                </div>
+            </div>
+            <h2 class="text-lg md:text-xl font-bold text-secondary dark:text-dark-text/60 mb-6 italic">5분간 1권 영어 원서 클래스의 시작</h2>
+            <h1 class="text-4xl md:text-7xl font-serif italic font-bold leading-tight mb-12 max-w-5xl mx-auto tracking-tight">
+                읽기부터 대화까지 <span class="text-primary dark:text-dark-primary not-italic font-sans font-black">하나의 루틴</span><br/>
+                <span class="text-2xl md:text-4xl text-secondary dark:text-dark-text/40">(영어 원서 읽기의 모든 것)</span>
+            </h1>
+            <a href="../01-reading-diagnosis/literstella-reading-diagnosis/index.html" class="inline-block bg-primary dark:bg-dark-primary text-white dark:text-dark-bg font-bold px-12 py-5 rounded-full shadow-2xl hover:-translate-y-1 transition-all text-lg">
+                나의 영어 3분 진단
+            </a>
+        </section>
+
+        <!-- Program Grid (3-Column) -->
+        <section id="programs" class="py-24 bg-white/50 dark:bg-white/5 px-margin-mobile md:px-margin-desktop border-y border-outline-variant dark:border-white/5">
+            <div class="max-w-container-max mx-auto">
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center mb-24">
+                    <div class="lg:col-span-6 text-left">
+                        <h2 class="text-3xl md:text-5xl font-black mb-6 tracking-tighter">데이터로 증명하는 <br>나만의 독서 변화</h2>
+                        <p class="text-secondary dark:text-dark-text/60 text-lg leading-relaxed">3분 진단을 통해 추출한 독서 데이터를 시각화하고<br>가장 효율적인 영어 독서 성장 경로를 제시합니다.</p>
+                    </div>
+                    <div class="lg:col-span-6">
+                        <div class="bg-white dark:bg-dark-bg p-8 rounded-[40px] border border-outline-variant dark:border-white/10 shadow-2xl relative overflow-hidden group">
+                            <!-- Dashboard Visual SVG -->
+                            <svg viewBox="0 0 400 240" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-full h-auto transition-all duration-500 transform group-hover:scale-105">
+                                <rect width="400" height="240" rx="30" fill="currentColor" fill-opacity="0.02" class="text-primary dark:text-dark-primary"/>
+                                <!-- Grid Lines -->
+                                <path d="M40 40H360M40 80H360M40 120H360M40 160H360M40 200H360" stroke="currentColor" stroke-opacity="0.05" stroke-width="1" class="text-on-surface dark:text-dark-text"/>
+                                <path d="M40 40V200M120 40V200M200 40V200M280 40V200M360 40V200" stroke="currentColor" stroke-opacity="0.05" stroke-width="1" class="text-on-surface dark:text-dark-text"/>
+                                
+                                <!-- Chart Bars -->
+                                <rect x="60" y="140" width="40" height="60" rx="8" class="fill-primary/20 dark:fill-dark-primary/20"/>
+                                <rect x="140" y="90" width="40" height="110" rx="8" class="fill-primary/40 dark:fill-dark-primary/40"/>
+                                <rect x="220" y="50" width="40" height="150" rx="8" class="fill-primary/60 dark:fill-dark-primary/60"/>
+                                <rect x="300" y="110" width="40" height="90" rx="8" class="fill-primary dark:fill-dark-primary"/>
+                                
+                                <!-- Book & Stella Decoration -->
+                                <circle cx="340" cy="50" r="20" class="fill-primary/5 dark:fill-dark-primary/10"/>
+                                <path d="M335 45L340 48L345 45L342 50L345 55L340 52L335 55L338 50L335 45Z" class="fill-primary dark:fill-dark-primary animate-pulse"/>
+                            </svg>
+                            <!-- Blur Overlay for 'Analyzing' effect -->
+                            <div class="absolute inset-0 bg-white/10 dark:bg-black/10 backdrop-blur-[2px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                <span class="bg-white dark:bg-gray-800 px-4 py-2 rounded-full text-xs font-bold shadow-lg">REAL-TIME ANALYSIS</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-center mb-20">
+                    <h2 class="text-3xl md:text-5xl font-black mb-6 tracking-tighter">목적별 전문 프로그램</h2>
+                    <p class="text-secondary dark:text-dark-text/60 text-lg">당신의 목적에 맞는 맞춤형 원서 클래스를 선택하세요.</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                    <!-- Card 1 -->
+                    <div class="bg-background dark:bg-dark-bg p-10 rounded-[40px] border border-outline-variant dark:border-white/10 hover:shadow-2xl transition-all group">
+                        <div class="w-16 h-16 rounded-3xl bg-primary/5 dark:bg-dark-primary/10 flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <span class="material-symbols-outlined text-primary dark:text-dark-primary text-4xl">local_fire_department</span>
+                        </div>
+                        <h3 class="text-2xl font-black mb-4">영어 챌린지 루틴</h3>
+                        <p class="text-secondary dark:text-dark-text/60 mb-10 leading-relaxed">차근차근 나만의 원서 완독 프로젝트. 매일의 독해 실력을 쌓습니다.</p>
+                        <a href="../02-challenge/index.html" class="text-primary dark:text-dark-primary font-black hover:underline inline-flex items-center gap-2">자세히 보기 <span class="material-symbols-outlined text-sm">arrow_forward</span></a>
+                    </div>
+                    <!-- Card 2 (Harry Potter) -->
+                    <div class="bg-gradient-to-br from-primary dark:from-dark-primary to-primary-container dark:to-dark-primary-container p-10 rounded-[40px] shadow-2xl relative group text-white dark:text-dark-bg">
+                        <div class="w-16 h-16 rounded-3xl bg-white/20 flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <span class="material-symbols-outlined text-3xl">auto_fix_high</span>
+                        </div>
+                        <h3 class="text-2xl font-black mb-4">해리포터 원서 완독 클래스</h3>
+                        <p class="opacity-80 mb-10 leading-relaxed">원작의 감동을 그대로, 마법 같은 원서 독서를 경험하는 가장 확실한 방법.</p>
+                        <a href="https://class.literstella.co.kr" class="block bg-white dark:bg-dark-bg text-primary dark:text-dark-primary text-center font-black py-5 rounded-2xl hover:scale-105 transition-all">
+                            선착순 모집 참여하기
+                        </a>
+                    </div>
+                    <!-- Card 3 -->
+                    <div class="bg-background dark:bg-dark-bg p-10 rounded-[40px] border border-outline-variant dark:border-white/10 hover:shadow-2xl transition-all group">
+                        <div class="w-16 h-16 rounded-3xl bg-blue-500/5 dark:bg-blue-400/10 flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
+                            <span class="material-symbols-outlined text-blue-600 dark:text-blue-400 text-4xl">school</span>
+                        </div>
+                        <h3 class="text-2xl font-black mb-4">개인별 원서 완성 패키지</h3>
+                        <p class="text-secondary dark:text-dark-text/60 mb-10 leading-relaxed">기초부터 심화까지, 원서 마스터를 위한 체계적인 커리큘럼입니다.</p>
+                        <a href="#" class="text-primary dark:text-dark-primary font-black hover:underline inline-flex items-center gap-2">자세히 보기 <span class="material-symbols-outlined text-sm">arrow_forward</span></a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Newsletter (Glassmorphism) -->
+        <section class="py-24 px-margin-mobile md:px-margin-desktop max-w-container-max mx-auto">
+            <div class="relative p-12 md:p-20 rounded-[50px] overflow-hidden">
+                <!-- Background decoration for blur effect -->
+                <div class="absolute inset-0 bg-primary/5 dark:bg-dark-primary/5"></div>
+                <div class="absolute -right-20 -top-20 w-80 h-80 bg-primary/10 dark:bg-dark-primary/10 rounded-full blur-[100px]"></div>
+                <div class="absolute -left-20 -bottom-20 w-80 h-80 bg-blue-500/10 rounded-full blur-[100px]"></div>
+                
+                <div class="relative z-10 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+                    <div>
+                        <h3 class="text-3xl md:text-5xl font-black mb-6 tracking-tighter">무료 뉴스레터 구독</h3>
+                        <p class="text-lg md:text-xl text-secondary dark:text-dark-text/60 leading-relaxed">매주 화요일, 클래스 영문학의 정수를<br class="hidden md:block">메일함으로 직접 보내드립니다.</p>
+                    </div>
+                    <div class="bg-white/40 dark:bg-white/5 backdrop-blur-2xl p-8 md:p-10 rounded-[32px] border border-white/20 shadow-2xl">
+                        <form id="portalNewsletterForm" class="flex flex-col gap-4">
+                            <input type="email" placeholder="Email Address" required class="bg-white dark:bg-dark-bg border border-outline-variant dark:border-white/10 rounded-2xl px-6 py-5 text-on-surface dark:text-dark-text outline-none focus:ring-2 focus:ring-primary dark:focus:ring-dark-primary transition-all text-lg">
+                            <button type="submit" class="bg-on-surface dark:bg-dark-primary text-white dark:text-dark-bg font-black py-5 rounded-2xl text-lg hover:opacity-90 transition-all">구독 신청하기</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="py-16 px-margin-mobile md:px-margin-desktop border-t border-outline-variant dark:border-white/5">
+        <div class="max-w-container-max mx-auto flex flex-col md:flex-row justify-between items-center gap-12">
+            <div class="text-center md:text-left">
+                <div class="flex items-center justify-center md:justify-start gap-2 mb-4">
+                    <img src="../shared-assets/logos/logo-symbol.png" alt="LiterStella Symbol" class="h-7 w-auto dark:invert grayscale opacity-60 dark:opacity-80 transition-all">
+                    <img src="../shared-assets/logos/logo-literstella-en.png" alt="LiterStella Wordmark" class="h-4 w-auto dark:invert grayscale opacity-60 dark:opacity-80 transition-all">
+                </div>
+                <p class="text-sm font-bold text-secondary dark:text-dark-text/40 uppercase tracking-widest">© 2026 LiterStella. All rights reserved.</p>
+            </div>
+            <div class="flex flex-col md:flex-row items-center gap-8">
+                <a href="https://partner.literstella.co.kr" class="text-sm font-black text-secondary dark:text-dark-text/60 hover:text-primary dark:hover:text-dark-primary border-b border-dashed border-secondary/30">Partner Instructor Selection</a>
+                <a href="http://pf.kakao.com/_xkxdZxeb/chat" class="bg-[#FEE500] text-[#2b2415] font-black px-8 py-4 rounded-full text-sm hover:scale-105 transition-all shadow-xl">카카오톡 문의하기</a>
+            </div>
+        </div>
+    </footer>
+
+    <script src="./app.js"></script>
+</body>
+</html>

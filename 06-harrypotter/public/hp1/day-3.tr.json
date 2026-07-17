@@ -1,0 +1,51 @@
+{
+ "_note": "HP Day EN 사이드카. 원문 day-N.json 무수정. ⚠️ 원작(J.K. Rowling)의 번역이 아니라 리터스텔라 자체 한국어 재서술·해설의 영어화(English retelling/commentary) — 원문 문장 미복제. 매핑: chapter←chapterKo · intro←intro · scenes[i]←scenes[i].body · sceneTitles[i]←scenes[i].title · sceneAfters[i]←scenes[i].after · readingTitle · reading[]←reading[] · pullquote · essay[]←essay[] · vocab[i]{pos,def,note}←vocab[i]{pos,ko,note}(w=영어 헤드워드는 원본 유지) · teaser←teaser.text. sentenceEn/source/pages는 이미 영어라 미포함, sentenceKo는 sentenceEn이 곧 영어라 제외.",
+ "en": {
+  "chapter": "The Story Unfolds — A Night of Magic Falls on Privet Drive",
+  "intro": "However hard Mr. Dursley tries to defend his ordinary life, in this third installment of Harry Potter and the Sorcerer's Stone, real wizards arrive right outside number four, Privet Drive. Come along — a night of wonder begins!",
+  "scenes": [
+   "Back at home, Mr. Dursley can hold it in no longer, and he asks his wife whether she has had any news of the Potters. The mere sound of that name makes her bristle, and he watches her sharpen at once. Later, lying in bed, he keeps turning it all over in his mind, one dreadful possibility after another rolling past him in the dark.",
+   "Near midnight, on the very corner of Privet Drive that the tabby cat has been fixed on all day long, a man simply is there. No footsteps, no warning at all: he arrives as quietly as if the pavement itself had lifted him into place.",
+   "Dumbledore draws a silver lighter from his pocket, and with a series of small clicks he gathers up the light of the street lamps, one after another, until every last one goes dark. In the perfect blackness he turns and speaks a greeting to the tabby cat sitting on the wall, and something astonishing begins to happen."
+  ],
+  "sceneTitles": [
+   "The Dursleys, Too Uneasy to Sleep",
+   "Albus Dumbledore Appears out of the Dark",
+   "The Deluminator and Professor McGonagall's Transformation"
+  ],
+  "sceneAfters": [
+   "At last he drifts off, reassuring himself that there is no reason such people would ever come to them — and the author, with no mercy at all, hints at just how badly wrong he is.",
+   "",
+   "The cat has become a witch in square glasses, wearing a rather ruffled expression. And so the two wizards have finally gathered at number four, Privet Drive."
+  ],
+  "readingTitle": "Stella's Close Reading",
+  "reading": [
+   "At last the figures of the real magical world, Dumbledore and Professor McGonagall, have arrived on Privet Drive. What is fascinating is the way J. K. Rowling describes their extraordinary entrance.",
+   "She does not simply say that Dumbledore showed up. She paints it for the eye: so suddenly and so silently, as though he had just popped out of the ground. It is a scene that stands in sharp contrast with Privet Drive, that monument to ordinariness.",
+   "Physically turning over in bed, and turning thoughts over in your head — English uses the same 'turn over' for both, and simply adds 'in his mind' to complete a wonderful sentence. Let go of the translation for a moment and enjoy discovering these circuits that belong to English itself."
+  ],
+  "pullquote": "And the picture of Mr. Dursley tossing about with a head full of thoughts comes alive in the phrase 'turning it all over in his mind.'",
+  "essay": [
+   "The Dursleys, devout believers in the ordinary, have finally fallen asleep — and outside, on a dark street corner, the strangest and most magical things begin to happen. A night when the click of a Deluminator draws the lamplight away into the darkness, and a cat turns into a stern-faced witch.",
+   "While we sleep — or in the corners of daily life we would rather not look at — might miracles like these be quietly taking place too? And the child the two Hogwarts professors are waiting for so anxiously in the dark: how will he appear?"
+  ],
+  "vocab": [
+   {
+    "pos": "",
+    "def": "to keep thinking something through, mulling it over from one angle and then another",
+    "note": ""
+   },
+   {
+    "pos": "",
+    "def": "to spring up out of the ground; to appear all at once, as if by magic",
+    "note": ""
+   },
+   {
+    "pos": "",
+    "def": "flustered or unsettled; (of feathers or clothing) disarranged, out of order",
+    "note": ""
+   }
+  ],
+  "teaser": "From the night sky comes the roar of a huge engine. \"Riding a flying motorcycle, the giant Hagrid comes down with a baby in his arms!\""
+ }
+}

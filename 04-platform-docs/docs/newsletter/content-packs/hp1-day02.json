@@ -1,0 +1,110 @@
+{
+ "book": {
+  "id": "hp1",
+  "series_no": 1,
+  "title_en": "Harry Potter and the Sorcerer's Stone",
+  "title_ko": "해리포터와 마법사의 돌",
+  "author": "J.K. Rowling",
+  "year": 1997,
+  "total_days": 100,
+  "media_type": "live",
+  "brand_note": "HP 상표=유료 상품명 사용 금지. 본문0%·강의100%. 1권=5년 전 강독(품질 주의).",
+  "free_reading_playlist": "https://youtube.com/playlist?list=PLARsitvDhfaKdd7XctJriviiskDgGXHxI",
+  "club_url": "https://cafe.naver.com/literenglish/25286",
+  "workbook_url": "https://drive.google.com/file/d/1xNOPkGLXnOskmILbIZThoQbPwVztHXxU/view",
+  "class_5step_url": "https://class.literstella.co.kr/p/new-5",
+  "cafe_url": "https://cafe.naver.com/literenglish"
+ },
+ "day": 2,
+ "pages": "p.4-6",
+ "season": "Spring 2026",
+ "chapter": {
+  "no": "I",
+  "title_en": "The Boy Who Lived",
+  "title_ko": "이야기의 전개 — 빗나간 더즐리 씨의 일상"
+ },
+ "intro": "어제에 이어 프리벳가 4번지의 기묘한 화요일이 계속됩니다. 해리포터와 마법사의 돌의 두 번째 이야기가 도착합니다. 하루 10분 — 원서 그대로, 스토리 맥락 그대로. 자 시작합니다.!",
+ "scenes": [
+  {
+   "no": 1,
+   "title": "백주대낮의 올빼미와 망토 입은 사람들",
+   "body": "더즐리 씨가 사람들에게 소리치고 업무 전화를 거는 동안, 거리에 있는 사람들은 입을 떡 벌리고 하늘을 바라봅니다. 환한 백주대낮에 올빼미 떼가 열을 지어 머리 위로 휙휙 날아가고 있었기 때문이죠. 하지만 완벽하게 정상적인 더즐리 씨만은 이 기이한 풍경을 애써 외면합니다.",
+   "quote": "Mr. Dursley, however, had a perfectly normal, owl-free morning.",
+   "after": "오후가 되어 도넛을 사러 나선 그는 빵집 옆에서 또다시 수상하게 속닥거리는 망토 입은 무리를 마주치고, 극도의 불편함을 느낍니다."
+  },
+  {
+   "no": 2,
+   "title": "귓가를 스치는 이름, \"Harry\"",
+   "body": "그들 곁을 무심히 지나치려던 순간, 몇 마디 단어들이 더즐리 씨의 귀에 날아와 꽂힙니다. \"포터 부부 말이야...\", \"맞아, 아들 해리가...\" 그 순간, 그는 얼음처럼 멈춰 섰고 거대한 공포가 그를 확 덮칩니다.",
+   "quote": "Mr. Dursley stopped dead. Fear flooded him.",
+   "note": "아내가 세상에서 가장 꺼리는 이름. 그는 집 전화의 번호를 누르다 말고 생각합니다. '포터가 그렇게 희귀한 성은 아니잖아? 조카 이름이 하비였던 것 같기도 하고...' 애써 현실을 부정해 봅니다."
+  },
+  {
+   "no": 3,
+   "title": "낯선 노인의 포옹과 \"머글\"",
+   "body": "퇴근길, 생각에 잠긴 채 걷다 보라색 망토를 입은 노인과 부딪힌 더즐리 씨. 하지만 그 노인은 넘어져서도 화를 내기는커녕 오히려 얼굴이 쫙 갈라지도록 미소를 지으며 외칩니다.",
+   "after": "\"그 사람이 마침내 사라졌으니까요! 머글들도 기뻐해야 할 날입니다!\" 노인에게 얼떨결에 안긴 채 꼼짝 못 하고 서 있는 더즐리 씨. 그의 완벽한 일상은 이제 완전히 박살 났습니다."
+  }
+ ],
+ "one_sentence": {
+  "en": "Even Muggles like yourself should be celebrating, this happy, happy day!",
+  "source": "Harry Potter and the Sorcerer's Stone, Chapter I · p.6"
+ },
+ "one_line_translation": "\"심지어 당신 같은 머글들도 축하해야 한답니다. 이 행복하고 행복한 날을 말이죠!\"",
+ "sentence_reading": [
+  "드디어 '머글(Muggle)'이라는 상징적인 단어가 현실 세계에 처음 등장하는 순간입니다. 평범함을 신앙처럼 여기는 더즐리 씨에게, 알지도 못하는 단어로 불리며 낯선 이에게 포옹을 당하는 이 장면은 문자 그대로의 낭패(rattled)이자 재앙이었을 것입니다.",
+  "원서를 읽다 보면 작가가 인물의 불안과 당혹감을 설명하기 위해 '어떤 동사'를 선택했는지 유심히 보게 됩니다. 조카의 이름이 '해리'라는 말을 엿들었을 때 그는 그저 놀란 것이 아니라, 발이 묶인 듯 얼어붙었고(stopped dead) 공포가 그를 범람하듯 덮쳤으며(fear flooded him), 사무실로 쏜살같이 도망쳤습니다(dashed back).",
+  {
+   "pullquote": "우리말로는 모두 그저 '놀랐다'거나 '돌아갔다'로 번역될 수 있는 상황들이, 동적이고 입체적인 영단어들을 만나 한 편의 선명한 씬(Scene)으로 완성됩니다."
+  },
+  "억지로 암기하려 하지 마세요. 더즐리 씨가 겪은 우중충하고 당황스러운 화요일의 풍경을 머릿속에 그리며 함께 호흡하다 보면, 이 단어들은 자연스럽게 여러분의 것이 될 것입니다."
+ ],
+ "essay": [
+  "우리는 종종 삶에 찾아오는 변화의 징조들을 외면하려 애씁니다. 더즐리 씨가 지도를 보는 고양이를 빛의 착시라 치부하고, 귀에 꽂힌 조카의 이름을 어떻게든 다른 이름으로 합리화하려 했던 것처럼요.",
+  "하지만 낯선 노인이 기쁨에 차서 내뱉은 이 외침은, 우리가 아무리 평범함을 방패 삼아 숨으려 해도 피할 수 없는 '거대한 사건'이 이미 시작되었음을 예고합니다."
+ ],
+ "vocab": [
+  {
+   "word": "swoop",
+   "meaning": "(새가 먹이를 낚아채듯) 휙 날아들다, 급강하하다"
+  },
+  {
+   "word": "rattle",
+   "meaning": "(딸그락 소리를 내며) 당황하게 하다, 낭패를 겪게 하다"
+  },
+  {
+   "word": "flood",
+   "meaning": "(감정, 두려움 등이 홍수처럼) 확 덮치다, 밀려들다"
+  }
+ ],
+ "teaser": {
+  "day": 3,
+  "text": "한밤중, 프리벳가 4번지에 나타난 기묘한 노신사. \"그가 가로등 불빛을 하나씩 끄기 시작할 때, 마침내 진짜 마법이 시작됩니다.\""
+ },
+ "media": {
+  "story_video": {
+   "title": "오늘을 여는 스토리 영상",
+   "desc": "DAY02 머글의 눈에 띄기 시작한 마법 세계의 흔적들",
+   "url": "https://youtu.be/NzYziWqTwR8"
+  },
+  "intro_audio": {
+   "title": "오늘을 여는 1분 오디오",
+   "desc": "Day02 더즐리의 일상을 박살낸 낯선 징조들",
+   "url": "https://drive.google.com/file/d/1mTb0pVNc-hgqkY8cUEoPv_DJa7HY2EBv/view"
+  },
+  "detail_audio": {
+   "title": "오늘의 해설 오디오",
+   "desc": "Day02 일상을 덮친 불안의 묘사",
+   "url": "https://drive.google.com/file/d/1mg9ByrK6J35mnvXtU29HthHDO5LH8Yh3/view"
+  },
+  "pdf": {
+   "desc": "DAY02 PDF",
+   "url": "https://drive.google.com/file/d/1PiT9J0qgauYy6qsW_tVEZfjU23ZE6kLn/view"
+  },
+  "free_reading_video": {
+   "desc": "리터스텔라 스토리텔링 원서 무료 강독 - 해리포터 1권 DAY02",
+   "url": "https://youtu.be/KInBE69u4aw"
+  }
+ },
+ "_warnings": []
+}

@@ -1,0 +1,18 @@
+/* LiterStella Master Portal Styles */
+
+/* Base font settings and custom styles handled via index.html Tailwind configuration */
+
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: 'Pretendard', 'Inter', sans-serif;
+}
+
+/* Custom utility classes */
+.hidden {
+    display: none !important;
+}
