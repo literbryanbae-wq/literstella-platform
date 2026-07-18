@@ -17,8 +17,9 @@
     // 포트원 공개값(비밀 아님 — 프론트에도 노출되는 값)
     "PORTONE_STORE_ID": "store-464ff242-c317-4693-96c2-1052658e14b7",
     "PORTONE_BILLING_CHANNEL_KEY": "channel-key-3917d309-e69b-44b6-a0d5-2c7e3b727165",
-    // CORS 허용 Origin (쉼표구분) — 프론트 도메인만
-    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr"
+    // CORS 허용 Origin (쉼표구분) — 프론트 도메인만. 클래스 앱(강독 이관, 2026-07-18) 추가:
+    //   class-new=스테이징 · class=컷오버 후 · pages.dev=배포 프리뷰 QA
+    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev"
   },
 
   // 배포 시 secret으로 주입 (wrangler secret put <NAME>):

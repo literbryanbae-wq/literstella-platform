@@ -441,6 +441,60 @@ async function classVerifyOtp(req, env, cors) {
   return json({ ok: true }, 200, cors);
 }
 
+// ── 결제 이메일 ≠ 로그인 이메일 수강생 셀프서비스 연결 (2026-07-18, 운영자: 코드 수동발급은 3천명 규모 불가) ──
+//   로그인 계정(X-User-Token JWT) + 결제 이메일 OTP(받은편지함 소유 증명) → 명단 대조 →
+//   class_verifications(email=로그인, enrollment_email=결제) 기록 → 게이트는 기존 로직(로그인 이메일 조회) 그대로 통과.
+//   🔒 1회 귀속: 한 결제 이메일은 한 계정에만(unique index가 레이스까지 최종 방어) — 수강권 다계정 공유 차단.
+//   인증 코드(수동 발급)는 예외 폴백으로 유지.
+async function classLinkEnrollment(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user?.email) return json({ ok: false, error: "unauthorized" }, 401, cors);
+  const loginEmail = user.email;
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const enrollEmail = String(b.email || "").trim().toLowerCase();
+  const code = String(b.code || "").trim();
+  const book = String(b.book || "kidari").trim().toLowerCase();
+  const [expStr, sig] = String(b.token || "").split(".");
+  const exp = Number(expStr);
+  if (!EMAIL_RE.test(enrollEmail) || enrollEmail.length > 254) return json({ ok: false, error: "bad_email" }, 400, cors);
+  if (!exp || !sig || Date.now() > exp) return json({ ok: false, error: "expired" }, 400, cors);
+  if (!/^\d{6}$/.test(code)) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  const expected = await hmacHex(env.OTP_SECRET, `code:${enrollEmail}:${code}:${exp}`);
+  if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  // 결제 이메일 소유 증명됨 → 수강 명단 대조
+  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(enrollEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
+  const enrolled = enr.ok && (await enr.json()).length > 0;
+  if (!enrolled) return json({ ok: false, notEnrolled: true, message: "이 이메일은 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
+  // 1회 귀속 사전 확인(친절 메시지용 — 최종 방어는 unique index)
+  const linked = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
+  if (linked.ok) {
+    const rows = await linked.json();
+    if (rows.length && rows[0].email !== loginEmail) {
+      return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요. 그 계정으로 로그인하시거나, 본인 수강권이 맞는데 연결이 안 된다면 카카오 채널로 문의해 주세요." }, 200, cors);
+    }
+    if (rows.length) return json({ ok: true }, 200, cors); // 같은 계정 재시도 = 멱등 성공
+  }
+  const ins = await sbFetch(env, `class_verifications`, {
+    method: "POST",
+    headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+    body: JSON.stringify({ email: loginEmail, book_code: book, enrollment_email: enrollEmail }),
+  });
+  if (!ins.ok) {
+    const t = await ins.text().catch(() => "");
+    // enrollment_email 컬럼 미존재(운영자 SQL 전) → 기능 대기 안내(코드 폴백 유도)
+    if (/enrollment_email|42703|PGRST204/i.test(t)) return json({ ok: false, error: "sql_pending", message: "지금은 자동 연결 준비 중이에요. 인증 코드로 연결해 주세요." }, 200, cors);
+    // unique index 충돌(동시 연결 레이스) = 다른 계정이 먼저 귀속
+    if (ins.status === 409 || /23505|duplicate/i.test(t)) {
+      // 로그인 계정 자신의 (email,book) PK 중복이면 멱등 성공
+      const mine = await sbFetch(env, `class_verifications?email=eq.${encodeURIComponent(loginEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
+      if (mine.ok && (await mine.json()).length) return json({ ok: true }, 200, cors);
+      return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." }, 200, cors);
+    }
+    return json({ ok: false, error: "record_failed" }, 502, cors);
+  }
+  return json({ ok: true }, 200, cors);
+}
+
 // ── 본인인증(통합인증) 결과 조회 — identityVerificationId로 PortOne 조회 → verifiedCustomer. ──
 //   PORTONE_API_SECRET 사용. id는 unguessable UUID라 플래그 없이 열되, 운영 시 user 토큰 게이트 권장.
 async function identityVerify(req, env, cors) {
@@ -533,7 +587,7 @@ async function sendSentenceDigest(req, env, cors) {
 //   mode: 'dry'(수신자 수만) · 'test'(ADMIN_EMAIL만) · 'send'(active 전체, CONTENT_SEND_ENABLED='true' 필요).
 //   콘텐츠 팩토리 publish 런북이 호출(운영자 GO 후) — E:\LiterStella_전사\factory\runbooks\publish.md
 const CONTENT_AUDIENCES = { lecture: "lecture_subscribers", hp: "hp_subscribers" };
-const CONTENT_LINK_ORIGINS = ["https://challenge.literstella.co.kr", "https://read.literstella.co.kr"];
+const CONTENT_LINK_ORIGINS = ["https://challenge.literstella.co.kr", "https://read.literstella.co.kr", "https://class-new.literstella.co.kr", "https://class.literstella.co.kr"];
 function contentEmailHtml(p) {
   const body = `<div style="font-size:11px;letter-spacing:2px;color:#c8a84b;font-weight:800;margin-bottom:6px;">${escHtml(p.kicker || "새 콘텐츠가 올라왔어요")}</div>`
     + `<div style="font-size:17px;font-weight:800;margin-bottom:6px;">${escHtml(p.title || "")}</div>`
@@ -593,6 +647,12 @@ export default {
     if (path === "/api/class/verify-otp") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return classVerifyOtp(req, env, cors);
+    }
+
+    // 결제 이메일 ≠ 로그인 이메일 수강생 셀프서비스 연결 — 로그인 JWT + 결제 이메일 OTP → 1회 귀속.
+    if (path === "/api/class/link-enrollment") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return classLinkEnrollment(req, env, cors);
     }
 
     // 본인인증(통합인증) 결과 조회 — PORTONE_API_SECRET 필요. 플래그 없이 열림(id=unguessable UUID).
