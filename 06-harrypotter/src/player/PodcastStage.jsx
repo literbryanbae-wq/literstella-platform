@@ -53,22 +53,33 @@ const SR_ONLY = { position: 'absolute', width: '1px', height: '1px', margin: '-1
 function SceneCanvas({ scenes, t, ambient, playing }) {
   const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const [tick, setTick] = useState(0);
+  // 🔴 방어 정규화(2026-07-20, 챌린지 정본에서 수동 이식 — 이 파일은 포크라 자동 동기화 안 됨).
+  //    싱크 스캔은 ①오름차순 ②전 원소 start 보유를 전제하며, 위반 시 `else break`가 첫 원소에서 걸려
+  //    무대가 조용히 영구 정지한다. 전부 유효하면 정렬 후 싱크, 하나라도 빠지면 앰비언트로 강등.
+  const S = useMemo(() => {
+    const a = (scenes || []).filter(s => s && s.url);
+    const timed = a.filter(s => Number.isFinite(s.start));
+    return timed.length === a.length && timed.length ? [...timed].sort((x, y) => x.start - y.start) : a;
+  }, [scenes]);
+  const canSync = !ambient && S.length > 0 && S.every(s => Number.isFinite(s.start));
   useEffect(() => {
-    if (!ambient || reduce || !playing) return undefined;
+    if (canSync || reduce || !playing || !S.length) return undefined;
     const iv = setInterval(() => setTick(k => k + 1), AMBIENT_MS);
     return () => clearInterval(iv);
-  }, [ambient, reduce, playing]);
+  }, [canSync, reduce, playing, S.length]);
   const idx = useMemo(() => {
-    if (ambient) return reduce ? 0 : (tick % scenes.length);
+    if (!S.length) return 0;
+    if (!canSync) return reduce ? 0 : (tick % S.length);
     let k = 0;
-    for (let i = 0; i < scenes.length; i++) { if (t >= scenes[i].start - 0.05) k = i; else break; }
+    for (let i = 0; i < S.length; i++) { if (t >= S[i].start - 0.05) k = i; else break; }
     return k;
-  }, [ambient, reduce, tick, scenes, t]);
+  }, [canSync, reduce, tick, S, t]);
   const prev = useRef(idx);
   const [cur, setCur] = useState(idx);
   useEffect(() => { if (idx !== cur) { prev.current = cur; setCur(idx); } }, [idx, cur]);
-  const under = scenes[prev.current] || scenes[0];
-  const over = scenes[cur] || scenes[0];
+  const under = S[prev.current] || S[0];
+  const over = S[cur] || S[0];
+  if (!under || !over) return null;
   return (
     <>
       <img src={under.url} alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
