@@ -428,17 +428,21 @@ async function classVerifyOtp(req, env, cors) {
   const expected = await hmacHex(env.OTP_SECRET, `code:${email}:${code}:${exp}`);
   if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
   // 이메일 소유 증명됨 → 수강 명단 대조(service_role).
-  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
-  const enrolled = enr.ok && (await enr.json()).length > 0;
-  if (!enrolled) return json({ ok: false, notEnrolled: true, message: "이 이메일은 강독 클래스 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
-  // 소유 증명 + 수강생 확인 → verifications 기록(PK=email,book_code 멱등). 이후 게이트 통과.
+  //   🔴 인증 1회 = 평생소장 전부(운영자 2026-07-20): 요청한 강좌 하나가 아니라 이 이메일이 명단에 있는
+  //   모든 book_code에 verifications를 일괄 심는다 — 다른 소장 강좌는 재인증 없이 즉시 열림.
+  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&select=book_code`);
+  const books = enr.ok ? [...new Set(((await enr.json()) || []).map(r => r.book_code).filter(Boolean))] : [];
+  if (!books.length) return json({ ok: false, notEnrolled: true, message: "이 이메일은 강독 클래스 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
   const ins = await sbFetch(env, `class_verifications`, {
     method: "POST",
     headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
-    body: JSON.stringify({ email, book_code: book }),
+    body: JSON.stringify(books.map(bc => ({ email, book_code: bc }))),
   });
   if (!ins.ok && ins.status !== 409) return json({ ok: false, error: "record_failed" }, 502, cors);
-  return json({ ok: true }, 200, cors);
+  if (!books.includes(book)) {
+    return json({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 열렸어요." }, 200, cors);
+  }
+  return json({ ok: true, granted: books }, 200, cors);
 }
 
 // ── 결제 이메일 ≠ 로그인 이메일 수강생 셀프서비스 연결 (2026-07-18, 운영자: 코드 수동발급은 3천명 규모 불가) ──
@@ -461,23 +465,23 @@ async function classLinkEnrollment(req, env, cors) {
   if (!/^\d{6}$/.test(code)) return json({ ok: false, error: "invalid_code" }, 400, cors);
   const expected = await hmacHex(env.OTP_SECRET, `code:${enrollEmail}:${code}:${exp}`);
   if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
-  // 결제 이메일 소유 증명됨 → 수강 명단 대조
-  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(enrollEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
-  const enrolled = enr.ok && (await enr.json()).length > 0;
-  if (!enrolled) return json({ ok: false, notEnrolled: true, message: "이 이메일은 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
-  // 1회 귀속 사전 확인(친절 메시지용 — 최종 방어는 unique index)
-  const linked = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
+  // 결제 이메일 소유 증명됨 → 수강 명단 대조.
+  //   🔴 인증 1회 = 평생소장 전부(운영자 2026-07-20): 이 결제 이메일이 명단에 있는 모든 book_code를 로그인 계정에 일괄 귀속.
+  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(enrollEmail)}&select=book_code`);
+  const books = enr.ok ? [...new Set(((await enr.json()) || []).map(r => r.book_code).filter(Boolean))] : [];
+  if (!books.length) return json({ ok: false, notEnrolled: true, message: "이 이메일은 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
+  // 1회 귀속 사전 확인(친절 메시지용 — 최종 방어는 unique index): 어느 강좌든 다른 계정에 이미 귀속된 메일이면 전체 차단(공유 루프홀 방지).
+  const linked = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollEmail)}&select=email&limit=5`);
   if (linked.ok) {
-    const rows = await linked.json();
-    if (rows.length && rows[0].email !== loginEmail) {
+    const rows = (await linked.json()) || [];
+    if (rows.some(r => r.email !== loginEmail)) {
       return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요. 그 계정으로 로그인하시거나, 본인 수강권이 맞는데 연결이 안 된다면 카카오 채널로 문의해 주세요." }, 200, cors);
     }
-    if (rows.length) return json({ ok: true }, 200, cors); // 같은 계정 재시도 = 멱등 성공
   }
   const ins = await sbFetch(env, `class_verifications`, {
     method: "POST",
     headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
-    body: JSON.stringify({ email: loginEmail, book_code: book, enrollment_email: enrollEmail }),
+    body: JSON.stringify(books.map(bc => ({ email: loginEmail, book_code: bc, enrollment_email: enrollEmail }))),
   });
   if (!ins.ok) {
     const t = await ins.text().catch(() => "");
@@ -487,12 +491,15 @@ async function classLinkEnrollment(req, env, cors) {
     if (ins.status === 409 || /23505|duplicate/i.test(t)) {
       // 로그인 계정 자신의 (email,book) PK 중복이면 멱등 성공
       const mine = await sbFetch(env, `class_verifications?email=eq.${encodeURIComponent(loginEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
-      if (mine.ok && (await mine.json()).length) return json({ ok: true }, 200, cors);
+      if (mine.ok && (await mine.json()).length) return json({ ok: true, granted: books }, 200, cors);
       return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." }, 200, cors);
     }
     return json({ ok: false, error: "record_failed" }, 502, cors);
   }
-  return json({ ok: true }, 200, cors);
+  if (!books.includes(book)) {
+    return json({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 연결됐어요." }, 200, cors);
+  }
+  return json({ ok: true, granted: books }, 200, cors);
 }
 
 // ── 본인인증(통합인증) 결과 조회 — identityVerificationId로 PortOne 조회 → verifiedCustomer. ──
