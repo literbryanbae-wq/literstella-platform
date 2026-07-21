@@ -7,6 +7,10 @@ import { BookOpen, GraduationCap, ChevronRight, ArrowLeft, Headphones, Sparkles,
 import PodcastStage from './player/PodcastStage'
 import { audio, useAudio } from './player/audioPlayer'
 import { loadCaptions } from './player/captions'
+import A11yGuideChip, { SrIntro, a11ySrText } from './components/A11yGuideChip'
+
+// 접근 안내 칩 — HP 버건디 양피지 테마 오버라이드(이 앱엔 --ls-* 토큰이 없어 colors로 넘긴다)
+const A11Y_COLORS = { text: '#f3e6c9', muted: '#c4ab80', surface: 'rgba(0,0,0,0.22)', line: 'rgba(243,230,201,0.22)' }
 
 const CLASS_URL = 'https://class.literstella.co.kr/p/new-9'
 const CLUB_URL = 'https://cafe.naver.com/literenglish'
@@ -34,6 +38,8 @@ function Home({ index, onOpen }) {
         <p>하루 3쪽, 스텔라와 함께 원서를 끝까지. 강독 영상·오늘의 한 문장·워크북 단어·낭독 오디오를 하루치씩 모아, 100일이면 1권을 완독합니다.</p>
         <div className="rule" />
         <p style={{ fontSize: '12.5px', color: '#c9b795' }}>{index ? `${index.bookEn} · ${index.days.length}일 공개 중` : ' '}</p>
+        {/* 이 앱엔 헤더·도크가 없어 첫 화면에서도 안내를 찾을 수 있게 둔다(Day 화면에도 있음) */}
+        <A11yGuideChip preset="hp" style={{ marginTop: '14px' }} colors={A11Y_COLORS} />
       </div>
       {!index ? <div style={{ textAlign: 'center', color: '#c9b795', padding: '40px' }}>클럽을 여는 중…</div> : (
         <div className="grid">
@@ -80,6 +86,8 @@ function DayView({ day, onBack, onOpen, total }) {
 
   return (
     <div className="wrap">
+      {/* 낭독기 전용 인트로 — Day 진입 직후 읽힘(화면낭독기 사용은 감지 불가 → 낭독 순서에 심는다) */}
+      <SrIntro text={a11ySrText('hp')} />
       <button className="back" onClick={onBack}><ArrowLeft size={17} /> 완독 클럽으로</button>
       <div style={{ marginTop: '6px' }}>
         <div className="kicker">Chapter {d.chapterNo} · {cleanPages(d.pages)}</div>
@@ -169,6 +177,9 @@ function DayView({ day, onBack, onOpen, total }) {
         <a className="cta gold" href={d.youtubeId ? `https://youtu.be/${d.youtubeId}` : CLUB_URL} target="_blank" rel="noopener noreferrer"><Play size={17} /> 유튜브에서 강독 전체 보기</a>
         <a className="cta ghost" href={CLASS_URL} target="_blank" rel="noopener noreferrer"><GraduationCap size={17} /> 스텔라와 한 문장씩 깊이 — 완독 클럽 안내 →</a>
       </div>
+
+      {/* 접근 안내 칩 — 스텔라 녹음(R2 a11y/hp.mp3) 재생 + 실패 시 브라우저 음성 폴백 */}
+      <A11yGuideChip preset="hp" style={{ marginTop: '16px' }} colors={A11Y_COLORS} />
 
       {d.teaser && <div className="teaser"><b className="gold cinzel">DAY {String(d.teaser.day).padStart(2, '0')}</b><br />{d.teaser.text}</div>}
 
