@@ -362,14 +362,70 @@ function otpEmailHtml(code) {
 async function sendResendEmail(env, { to, subject, html }) {
   if (!env.RESEND_API_KEY) return false;
   const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>"; // 도메인 인증 후 인증@literstella.co.kr
-  try {
-    const r = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: [to], subject, html }),
-    });
-    return r.ok;
-  } catch { return false; }
+  // 429/5xx 지수 백오프 재시도 2회 + 실패 로깅(발송 감사 2026-07-20 P0: 대량 유입 시 순간 레이트 초과가 조용한 send_failed로 전락하던 것).
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    try {
+      const r = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to: [to], subject, html }),
+      });
+      if (r.ok) return true;
+      const retryable = r.status === 429 || r.status >= 500;
+      let detail = "";
+      try { detail = (await r.text()).slice(0, 160); } catch { /* noop */ }
+      console.log(JSON.stringify({ evt: "resend_fail", status: r.status, attempt, retryable, subject: subject.slice(0, 30), detail }));
+      if (!retryable || attempt === 2) return false;
+    } catch (e) {
+      console.log(JSON.stringify({ evt: "resend_fail", status: "network", attempt, detail: String(e).slice(0, 120) }));
+      if (attempt === 2) return false;
+    }
+    await new Promise((res) => setTimeout(res, 400 * Math.pow(2, attempt))); // 0.4s → 0.8s
+  }
+  return false;
+}
+
+// Resend 마케팅 플랜의 1회 대상 한도에 맞춘 애플리케이션 세그먼트.
+// Resend API batch 자체는 최대 100건이므로, 선택된 1,000명 세그먼트를 100건씩 전송한다.
+const RESEND_AUDIENCE_SEGMENT_SIZE = 1000;
+const RESEND_BATCH_SIZE = 100;
+function parseAudienceSegment(raw) {
+  const value = raw === undefined || raw === null || raw === "" ? 1 : Number(raw);
+  return Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+function getAudienceSegment(emails, segment) {
+  const totalSegments = Math.ceil(emails.length / RESEND_AUDIENCE_SEGMENT_SIZE);
+  const start = (segment - 1) * RESEND_AUDIENCE_SEGMENT_SIZE;
+  return {
+    segment,
+    totalSegments,
+    recipients: emails.slice(start, start + RESEND_AUDIENCE_SEGMENT_SIZE),
+  };
+}
+async function sendResendBatch(env, { to, subject, html }) {
+  if (!env.RESEND_API_KEY || !Array.isArray(to) || !to.length) return { sent: 0, failed: 0 };
+  const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
+  let sent = 0;
+  let failed = 0;
+  for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
+    const batch = to.slice(offset, offset + RESEND_BATCH_SIZE).map(email => ({ from, to: [email], subject, html }));
+    let ok = false;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const r = await fetch("https://api.resend.com/emails/batch", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify(batch),
+        });
+        if (r.ok) { ok = true; break; }
+        if (r.status !== 429 && r.status < 500) break;
+      } catch { /* retry below */ }
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+    if (ok) sent += batch.length;
+    else failed += batch.length;
+  }
+  return { sent, failed };
 }
 // 라이프사이클 정보성 메일 발송. {to, key, data} → renderEmail → {{unsubscribe}} 치환 → Resend.
 async function lifecycleEmail(req, env, cors) {
@@ -561,6 +617,8 @@ async function sendSentenceDigest(req, env, cors) {
   let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
   const id = String(b.episodeId || "").trim();
   const mode = String(b.mode || "dry"); // dry | test | send
+  const segment = parseAudienceSegment(b.segment);
+  if (!segment) return json({ ok: false, error: "bad_segment", hint: "segment는 1 이상의 정수" }, 400, cors);
   if (!/^[a-z]+-\d+$/.test(id)) return json({ ok: false, error: "bad_id" }, 400, cors);
   // 회차 데이터 = 라이브 공개 JSON(제목/문장/링크). 해설(reading/oneMin)은 메일에 안 넣음.
   let ep;
@@ -570,22 +628,25 @@ async function sendSentenceDigest(req, env, cors) {
   const html = sentenceEmailHtml(ep);
   // active 구독자
   let subs = [];
-  try { const r = await sbFetch(env, `sentence_subscribers?active=eq.true&select=email`); subs = r.ok ? await r.json().catch(() => []) : []; } catch { subs = []; }
+  try { const r = await sbFetch(env, `sentence_subscribers?active=eq.true&select=email&order=email.asc`); subs = r.ok ? await r.json().catch(() => []) : []; } catch { subs = []; }
   const emails = [...new Set((Array.isArray(subs) ? subs : []).map(s => String(s.email || "").toLowerCase()).filter(e => EMAIL_RE.test(e)))];
+  const selected = getAudienceSegment(emails, segment);
+  if (selected.totalSegments > 0 && segment > selected.totalSegments) {
+    return json({ ok: false, error: "segment_out_of_range", mode, segment, totalSegments: selected.totalSegments, recipients: emails.length }, 400, cors);
+  }
   // Lyra 인앱 발행 알림 기록(test/send 시)
   if (mode === "test" || mode === "send") {
     await sbFetch(env, `sentence_broadcasts`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ episode_id: ep.id, book: ep.book, day: ep.day, title: ep.readingTitle || "", sentence_ko: ep.sentenceKo || "" }) }).catch(() => {});
   }
-  if (mode === "dry") return json({ ok: true, mode, recipients: emails.length }, 200, cors);
+  if (mode === "dry") return json({ ok: true, mode, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
   if (mode === "test") {
     const ok = env.ADMIN_EMAIL ? await sendResendEmail(env, { to: env.ADMIN_EMAIL, subject, html }) : false;
-    return json({ ok, mode, sentTo: env.ADMIN_EMAIL, recipients: emails.length }, ok ? 200 : 502, cors);
+    return json({ ok, mode, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, sentTo: env.ADMIN_EMAIL, recipients: emails.length }, ok ? 200 : 502, cors);
   }
   // mode === 'send' — 대량 발송(스위치 필요)
   if (env.SENTENCE_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "SENTENCE_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
-  let sent = 0, failed = 0;
-  for (const to of emails.slice(0, 500)) { (await sendResendEmail(env, { to, subject, html })) ? sent++ : failed++; }
-  return json({ ok: true, mode, sent, failed, recipients: emails.length }, 200, cors);
+  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html });
+  return json({ ok: true, mode, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
 // ── 콘텐츠 업데이트 알림 발송 (강독·HP 편지 등 — send-sentence의 범용 복제) ──
@@ -612,6 +673,8 @@ async function sendContentUpdate(req, env, cors) {
   const table = CONTENT_AUDIENCES[audience];
   if (!table) return json({ ok: false, error: "bad_audience", allowed: Object.keys(CONTENT_AUDIENCES) }, 400, cors);
   const mode = String(b.mode || "dry"); // dry | test | send
+  const segment = parseAudienceSegment(b.segment);
+  if (!segment) return json({ ok: false, error: "bad_segment", hint: "segment는 1 이상의 정수" }, 400, cors);
   const title = String(b.title || "").trim().slice(0, 120);
   const link = String(b.link || "").trim();
   if (!title) return json({ ok: false, error: "title_required" }, 400, cors);
@@ -619,17 +682,20 @@ async function sendContentUpdate(req, env, cors) {
   const subject = String(b.subject || "").trim().slice(0, 150) || `[리터스텔라] ${title}`;
   const html = contentEmailHtml({ kicker: b.kicker, title, book: b.book, teaser: String(b.teaser || "").slice(0, 400), link });
   let subs = [];
-  try { const r = await sbFetch(env, `${table}?active=eq.true&select=email`); subs = r.ok ? await r.json().catch(() => []) : []; } catch { subs = []; }
+  try { const r = await sbFetch(env, `${table}?active=eq.true&select=email&order=email.asc`); subs = r.ok ? await r.json().catch(() => []) : []; } catch { subs = []; }
   const emails = [...new Set((Array.isArray(subs) ? subs : []).map(s => String(s.email || "").toLowerCase()).filter(e => EMAIL_RE.test(e)))];
-  if (mode === "dry") return json({ ok: true, mode, audience, recipients: emails.length }, 200, cors);
+  const selected = getAudienceSegment(emails, segment);
+  if (selected.totalSegments > 0 && segment > selected.totalSegments) {
+    return json({ ok: false, error: "segment_out_of_range", mode, audience, segment, totalSegments: selected.totalSegments, recipients: emails.length }, 400, cors);
+  }
+  if (mode === "dry") return json({ ok: true, mode, audience, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
   if (mode === "test") {
     const ok = env.ADMIN_EMAIL ? await sendResendEmail(env, { to: env.ADMIN_EMAIL, subject, html }) : false;
-    return json({ ok, mode, audience, sentTo: env.ADMIN_EMAIL, recipients: emails.length }, ok ? 200 : 502, cors);
+    return json({ ok, mode, audience, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, sentTo: env.ADMIN_EMAIL, recipients: emails.length }, ok ? 200 : 502, cors);
   }
   if (env.CONTENT_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "CONTENT_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
-  let sent = 0, failed = 0;
-  for (const to of emails.slice(0, 500)) { (await sendResendEmail(env, { to, subject, html })) ? sent++ : failed++; }
-  return json({ ok: true, mode, audience, sent, failed, recipients: emails.length }, 200, cors);
+  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html });
+  return json({ ok: true, mode, audience, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
 // ── 라우터 ────────────────────────────────────────────────
