@@ -457,13 +457,22 @@ const RESEND_TEMPLATE_ALIASES = { newSpaceAnnouncement: "new-space-announcement"
 async function fetchResendAudienceEmails(env) {
   if (!env.RESEND_API_KEY) return { ok: false, error: "resend_key_missing" };
   try {
-    // Resend contacts API supports returning the complete contact list when limit is omitted.
-    const r = await fetch("https://api.resend.com/contacts", {
-      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
-    });
-    if (!r.ok) return { ok: false, error: "resend_contacts_failed", status: r.status };
-    const body = await r.json().catch(() => null);
-    const emails = [...new Set((Array.isArray(body?.data) ? body.data : [])
+    const contacts = [];
+    let after = "";
+    for (let page = 0; page < 100; page++) {
+      const query = new URLSearchParams({ limit: "100" });
+      if (after) query.set("after", after);
+      const r = await fetch(`https://api.resend.com/contacts?${query}`, { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } });
+      if (!r.ok) return { ok: false, error: "resend_contacts_failed", status: r.status };
+      const body = await r.json().catch(() => null);
+      const rows = Array.isArray(body?.data) ? body.data : [];
+      contacts.push(...rows);
+      if (!body?.has_more || !rows.length) break;
+      const next = String(rows[rows.length - 1]?.id || "");
+      if (!next || next === after) return { ok: false, error: "resend_contacts_pagination" };
+      after = next;
+    }
+    const emails = [...new Set(contacts
       .filter(contact => contact && contact.unsubscribed !== true)
       .map(contact => String(contact.email || "").trim().toLowerCase())
       .filter(email => EMAIL_RE.test(email)))].sort();
