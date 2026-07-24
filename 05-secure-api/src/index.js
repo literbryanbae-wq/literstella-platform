@@ -402,13 +402,18 @@ function getAudienceSegment(emails, segment) {
     recipients: emails.slice(start, start + RESEND_AUDIENCE_SEGMENT_SIZE),
   };
 }
-async function sendResendBatch(env, { to, subject, html }) {
+async function sendResendBatch(env, { to, subject, html, templateId }) {
   if (!env.RESEND_API_KEY || !Array.isArray(to) || !to.length) return { sent: 0, failed: 0 };
   const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
   let sent = 0;
   let failed = 0;
   for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
-    const batch = to.slice(offset, offset + RESEND_BATCH_SIZE).map(email => ({ from, to: [email], subject, html }));
+    const batch = to.slice(offset, offset + RESEND_BATCH_SIZE).map(email => {
+      const message = { from, to: [email] };
+      if (templateId) message.template = { id: templateId };
+      else Object.assign(message, { subject, html });
+      return message;
+    });
     let ok = false;
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
@@ -426,6 +431,24 @@ async function sendResendBatch(env, { to, subject, html }) {
     else failed += batch.length;
   }
   return { sent, failed };
+}
+
+const RESEND_TEMPLATE_ALIASES = { newSpaceAnnouncement: "new-space-announcement" };
+async function fetchResendAudienceEmails(env) {
+  if (!env.RESEND_API_KEY) return { ok: false, error: "resend_key_missing" };
+  try {
+    // Resend contacts API supports returning the complete contact list when limit is omitted.
+    const r = await fetch("https://api.resend.com/contacts", {
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    });
+    if (!r.ok) return { ok: false, error: "resend_contacts_failed", status: r.status };
+    const body = await r.json().catch(() => null);
+    const emails = [...new Set((Array.isArray(body?.data) ? body.data : [])
+      .filter(contact => contact && contact.unsubscribed !== true)
+      .map(contact => String(contact.email || "").trim().toLowerCase())
+      .filter(email => EMAIL_RE.test(email)))].sort();
+    return { ok: true, emails };
+  } catch { return { ok: false, error: "resend_contacts_network" }; }
 }
 // 라이프사이클 정보성 메일 발송. {to, key, data} → renderEmail → {{unsubscribe}} 치환 → Resend.
 async function lifecycleEmail(req, env, cors) {
@@ -698,6 +721,33 @@ async function sendContentUpdate(req, env, cors) {
   return json({ ok: true, mode, audience, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
+// Resend native Audience + published template 발송. 템플릿은 운영자가 검토한 alias만 허용한다.
+async function sendResendTemplateAudience(req, env, cors) {
+  const admin = await requireAdmin(req, env);
+  if (!admin) return json({ ok: false, error: "unauthorized" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const mode = String(b.mode || "dry");
+  const segment = parseAudienceSegment(b.segment);
+  const templateId = String(b.template || RESEND_TEMPLATE_ALIASES.newSpaceAnnouncement).trim();
+  if (!segment) return json({ ok: false, error: "bad_segment", hint: "segment는 1 이상의 정수" }, 400, cors);
+  if (templateId !== RESEND_TEMPLATE_ALIASES.newSpaceAnnouncement) return json({ ok: false, error: "bad_template" }, 400, cors);
+  const audience = await fetchResendAudienceEmails(env);
+  if (!audience.ok) return json({ ok: false, error: audience.error, status: audience.status || undefined }, 502, cors);
+  const selected = getAudienceSegment(audience.emails, segment);
+  if (selected.totalSegments > 0 && segment > selected.totalSegments) {
+    return json({ ok: false, error: "segment_out_of_range", mode, template: templateId, segment, totalSegments: selected.totalSegments, recipients: audience.emails.length }, 400, cors);
+  }
+  if (mode === "dry") return json({ ok: true, mode, template: templateId, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, recipients: audience.emails.length }, 200, cors);
+  if (mode === "test") {
+    const result = env.ADMIN_EMAIL ? await sendResendBatch(env, { to: [env.ADMIN_EMAIL], templateId }) : { sent: 0, failed: 1 };
+    return json({ ok: result.sent === 1, mode, template: templateId, segment, sentTo: env.ADMIN_EMAIL, recipients: audience.emails.length }, result.sent === 1 ? 200 : 502, cors);
+  }
+  if (mode !== "send") return json({ ok: false, error: "bad_mode" }, 400, cors);
+  if (env.RESEND_TEMPLATE_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "RESEND_TEMPLATE_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
+  const result = await sendResendBatch(env, { to: selected.recipients, templateId });
+  return json({ ok: true, mode, template: templateId, segment, totalSegments: selected.totalSegments, sent: result.sent, failed: result.failed, segmentRecipients: selected.recipients.length, recipients: audience.emails.length }, 200, cors);
+}
+
 // ── 라우터 ────────────────────────────────────────────────
 export default {
   async fetch(req, env) {
@@ -760,6 +810,7 @@ export default {
       if (path === "/api/admin/announce") return adminWrite(req, env, cors, "announce");
       if (path === "/api/admin/send-sentence") return sendSentenceDigest(req, env, cors);
       if (path === "/api/admin/send-content") return sendContentUpdate(req, env, cors);
+      if (path === "/api/admin/send-resend-template") return sendResendTemplateAudience(req, env, cors);
       return json({ ok: false, error: "not_found" }, 404, cors);
     }
 
