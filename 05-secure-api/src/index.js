@@ -89,6 +89,27 @@ function sbFetch(env, pathAndQuery, init) {
 // 흐름: ① 프론트가 diag Worker /api/send-code 로 운영자 이메일에 코드 발송
 //       ② 운영자가 코드 입력 → 여기로 {email, code, token} POST
 //       ③ email===ADMIN_EMAIL + OTP 유효 → 관리자 토큰 발급
+async function adminOtpRequest(req, env, cors) {
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const email = String(b.email || "").trim().toLowerCase();
+  if (!email || email !== String(env.ADMIN_EMAIL || "").trim().toLowerCase()) return json({ ok: false, error: "not_admin" }, 403, cors);
+  if (!env.OTP_SECRET) return json({ ok: false, error: "otp_not_configured" }, 503, cors);
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
+  const exp = Date.now() + 10 * 60 * 1000;
+  const sig = await hmacHex(env.OTP_SECRET, `admin-code:${email}:${code}:${exp}`);
+  const token = `${exp}.${sig}`;
+  const html = brandEmailHtml(`<div style="font-size:18px;font-weight:800;margin-bottom:12px;">관리자 인증 코드</div><p style="margin:0 0 16px;color:#5a5446;">10분 안에 아래 코드를 관리자 화면에 입력해 주세요.</p><div style="font-size:34px;font-weight:900;letter-spacing:10px;color:#c8a84b;text-align:center;padding:18px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;">${code}</div>`);
+  const sent = await sendResendEmail(env, { to: email, subject: "[리터스텔라] 관리자 인증 코드", html });
+  if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
+  return json({ ok: true, token, exp }, 200, cors);
+}
+async function verifyAdminOtpToken(env, email, code, token) {
+  const [expStr, sig] = String(token || "").split(".");
+  const exp = Number(expStr);
+  if (!env.OTP_SECRET || !exp || !sig || Date.now() > exp) return false;
+  const expected = await hmacHex(env.OTP_SECRET, `admin-code:${email}:${code}:${exp}`);
+  return timingSafeEq(expected, sig);
+}
 async function adminAuth(req, env, cors) {
   let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
   const email = String(b.email || "").trim().toLowerCase();
@@ -98,9 +119,8 @@ async function adminAuth(req, env, cors) {
   const [expStr, sig] = token.split(".");
   const exp = Number(expStr);
   if (!exp || !sig || Date.now() > exp) return json({ ok: false, error: "expired" }, 400, cors);
-  // diag sendCodeResponse 와 동일 서명식 (OTP_SECRET 공유)
-  const expected = await hmacHex(env.OTP_SECRET, `code:${email}:${code}:${exp}`);
-  if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  const valid = await verifyAdminOtpToken(env, email, code, token);
+  if (!valid) return json({ ok: false, error: "invalid_code" }, 400, cors);
   return json({ ok: true, adminToken: await issueAdminToken(env, email) }, 200, cors);
 }
 
@@ -803,6 +823,7 @@ export default {
       if (env.ADMIN_API_ENABLED !== "true") return json({ ok: false, error: "disabled" }, 404, cors);
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       if (path === "/api/admin/auth") return adminAuth(req, env, cors);
+      if (path === "/api/admin/request-otp") return adminOtpRequest(req, env, cors);
       if (path === "/api/admin/payment/confirm") return adminWrite(req, env, cors, "payment_confirm");
       if (path === "/api/admin/enrollment/delete") return adminWrite(req, env, cors, "enrollment_delete");
       if (path === "/api/admin/report/status") return adminWrite(req, env, cors, "report_status");
