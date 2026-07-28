@@ -160,9 +160,14 @@ const PORTONE_API = "https://api.portone.io";          // V2 base [CONFIRMED]
 const YANAWAN_PRICE_KRW = 3000;                         // 서버 가격 상수(빌링키 월구독·레거시)
 // 단건 결제 가격표 — 프론트 pricing.js(CHALLENGE_PRICES)와 일치. 금액은 항상 서버가 권위.
 const PRICE_BY_GOAL = { 30: 3000, 66: 5800, 100: 9800 };
-// 클래스 상품 가격표(토스 다이렉트) — 키다리 평생소장 69,000(운영자 확정, 워크북 무료판 포함).
-//   신규 클래스 상품은 여기만 추가(프론트 표시가와 이중 기재 — 서버가 권위).
-const PRICE_BY_PRODUCT = { "class-kidari-lifetime": 69000 };
+// 클래스 상품 카탈로그(토스 다이렉트) — 서버가 가격·해금 매핑의 단일 권위.
+//   구조 { won, books:[] } (적대검증 2026-07-29): 가격만 있고 books 매핑이 없으면 '돈 받고 미해금' 사고
+//   → books 없는 코드는 unknown_product로 거부된다. 코드 추가 = 판매 개시와 동치(앱에 전 강 실물 선행).
+//   추후 후보(콘텐츠 완비 시): anne 118000·pride 128000·littlewomen1/2 각 99000·gatsby 79000·sherlock 79800·
+//   littlewomen-pack 179800(books 3권·theory 등급 제외 서버 고정 선행)·kidari-pack 99800(부속 이행 자동화 선행).
+const PRICE_BY_PRODUCT = {
+  "class-kidari-lifetime": { won: 69000, books: ["kidari"] },
+};
 const YANAWAN_ORDER_NAME = "야나완 영어 챌린지 1개월";
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -209,7 +214,10 @@ async function tossWebhook(req, env, cors) {
           const q = await sbFetch(env, `payments?id=eq.${encodeURIComponent(p.orderId)}&select=email,source`);
           const rows = q.ok ? await q.json().catch(() => []) : [];
           const row = Array.isArray(rows) ? rows[0] : null;
-          if (row?.email && String(row.source || "").includes("class-kidari")) await grantClassEnrollment(env, row.email, "kidari", "toss_webhook");
+          // source='toss:{product}' → 카탈로그 books 전부 부여(승인 경로 유실 대비 2중화, 다권 지원)
+          const code = String(row?.source || "").startsWith("toss:") ? String(row.source).slice(5) : null;
+          const def = code ? PRICE_BY_PRODUCT[code] : null;
+          if (row?.email && def) { for (const bk of def.books) await grantClassEnrollment(env, row.email, bk, "toss_webhook"); }
         }
       }
     } catch { /* 실패 시 토스가 최대 7회 재시도 */ }
@@ -309,11 +317,27 @@ async function paymentRoute(req, env, cors, sub) {
     if (!paymentKey || !orderId) return json({ ok: false, error: "missing_params" }, 400, cors);
     if (!/^[A-Za-z0-9_-]{6,64}$/.test(orderId)) return json({ ok: false, error: "bad_order_id" }, 400, cors);
     const goalDays = Number(b.goalDays);
-    // 상품 결정: product(클래스 등 카탈로그) 우선 → goalDays(챌린지) → 30일 폴백. 금액은 항상 서버 권위.
+    // 상품 결정: product(클래스 카탈로그) 우선 → goalDays(챌린지) → 30일 폴백. 금액은 항상 서버 권위.
     const product = String(b.product || "");
-    if (product && !PRICE_BY_PRODUCT[product]) return json({ ok: false, error: "unknown_product" }, 400, cors);
-    const expected = PRICE_BY_PRODUCT[product] || PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
+    const prodDef = PRICE_BY_PRODUCT[product];
+    if (product && !(prodDef && Array.isArray(prodDef.books) && prodDef.books.length)) {
+      return json({ ok: false, error: "unknown_product" }, 400, cors); // books 매핑 없는 코드 = 판매 불가(미해금 사고 방지)
+    }
+    const expected = prodDef?.won || PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
     const maybeUser = await requireUser(req, env); // null 허용(게스트)
+
+    // 🔒 중복 과금 방어(적대검증 2026-07-29): 이미 전 구성 book을 소장한 이메일이면 승인 자체를 거부
+    //    — confirm 안 하면 인증만 되고 돈이 이동하지 않는다(카드 미청구). already_owned로 안내.
+    const preEmail = maybeUser?.email || (b.email ? String(b.email).slice(0, 200).toLowerCase().trim() : null);
+    if (prodDef && preEmail) {
+      let ownedAll = true;
+      for (const bk of prodDef.books) {
+        const q = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(preEmail)}&book_code=eq.${encodeURIComponent(bk)}&select=email&limit=1`);
+        const rows = q.ok ? await q.json().catch(() => []) : [];
+        if (!(Array.isArray(rows) && rows.length)) { ownedAll = false; break; }
+      }
+      if (ownedAll) return json({ ok: false, error: "already_owned", message: "이미 소장 중인 강의예요 — 결제되지 않았습니다. 로그인하면 바로 이용할 수 있어요." }, 409, cors);
+    }
 
     const cr = await fetch(`${TOSS_API}/v1/payments/confirm`, {
       method: "POST", headers: tossHeaders(env, { "Idempotency-Key": orderId }),
@@ -327,7 +351,7 @@ async function paymentRoute(req, env, cors, sub) {
       const qp = qr.ok ? await qr.json().catch(() => null) : null;
       if (qp?.status === "DONE" && qp?.totalAmount === expected) { paid = true; pay = qp; }
     }
-    const email = maybeUser?.email || (b.email ? String(b.email).slice(0, 200).toLowerCase().trim() : null);
+    const email = preEmail;
     await recordPaymentIdempotent(env, {
       id: orderId, payment_key: paymentKey,
       user_id: maybeUser?.id || null,
@@ -336,10 +360,14 @@ async function paymentRoute(req, env, cors, sub) {
       status: paid ? "DONE" : (pay?.code || pay?.status || "confirm_failed"),
       source: product ? `toss:${product}` : "toss_single", updated_at: new Date().toISOString(),
     });
-    // 클래스 상품 승인 → 수강 권한 즉시 부여(이메일 명단 매칭 → 로그인만 하면 6강+ 해금)
+    // 클래스 상품 승인 → 구성 book 전부 수강 권한 부여(다권 번들 지원 — 이메일 명단 매칭 = 로그인만 하면 해금)
     let granted = false;
-    if (paid && product === "class-kidari-lifetime" && email) {
-      granted = await grantClassEnrollment(env, email, "kidari", "toss_purchase");
+    if (paid && prodDef && email) {
+      granted = true;
+      for (const bk of prodDef.books) {
+        const ok = await grantClassEnrollment(env, email, bk, "toss_purchase");
+        granted = granted && ok;
+      }
     }
     return paid ? json({ ok: true, orderId, ...(product ? { granted } : {}) }, 200, cors)
                 : json({ ok: false, error: pay?.code || "not_paid", toss: { status: pay?.status, code: pay?.code } }, 402, cors);
