@@ -167,7 +167,16 @@ function portoneHeaders(env, extra) {
   // V2 서버 인증: Authorization: PortOne <API_SECRET> [CONFIRMED]
   return { Authorization: `PortOne ${env.PORTONE_API_SECRET}`, "Content-Type": "application/json", ...(extra || {}) };
 }
-function newPaymentId() { return `pay${crypto.randomUUID().replace(/-/g, "")}`; } // ASCII·≤40 (이니시스 oid 1~40): 'pay'+32hex=35
+function newPaymentId() { return `pay${crypto.randomUUID().replace(/-/g, "")}`; } // 영숫자 35자 — 토스 orderId 규칙(6~64·영숫자·-_) 충족
+
+// ── 토스페이먼츠 다이렉트 (2026-07-20 PG 전환: 포트원 제거 — 신규 결제는 이 경로만) ──────────
+//    승인(confirm) = POST /v1/payments/confirm {paymentKey, orderId, amount} · 금액은 서버 가격표 권위.
+//    인증: Basic base64(SECRET_KEY + ':') — 콜론 필수(토스 공식 '가장 흔한 오류').
+//    시크릿: wrangler secret put TOSS_SECRET_KEY (test_sk_… → 실가맹 후 live_sk_…).
+const TOSS_API = "https://api.tosspayments.com";
+function tossHeaders(env, extra) {
+  return { Authorization: `Basic ${btoa(`${env.TOSS_SECRET_KEY}:`)}`, "Content-Type": "application/json", ...(extra || {}) };
+}
 
 // 결제 단건 조회(reconcile) — 웹훅/응답 금액 신뢰 X, 항상 이걸로 확정
 async function portoneGetPayment(env, paymentId) {
@@ -246,6 +255,44 @@ async function paymentRoute(req, env, cors, sub) {
       await fetch(`${PORTONE_API}/billing-keys/${encodeURIComponent(billingKey)}`, { method: "DELETE", headers: portoneHeaders(env) }).catch(() => {}); // 재청구 불가화
     }
     return json({ ok: true, refunded }, 200, cors);
+  }
+
+  // ── 토스페이먼츠 다이렉트 단건 승인 (2026-07-20 PG 전환 — 신규 결제 유일 경로) ──
+  //   결제창 redirect 복귀 후 프론트가 호출. 금액 = 서버 가격표 권위(redirect amount 신뢰 X — 토스 공식 권고).
+  //   토큰 선택: 로그인=user 바인딩 / 게스트(상품 상세 비회원 구매)=email만 기록 → requireUser 게이트 앞에 위치.
+  //   승인 없이는 돈이 이동하지 않으므로(인증만으론 미결제) 비인증 호출 허용이 안전 — paymentKey는 결제자만 가짐.
+  if (sub === "toss-confirm") {
+    if (!env.TOSS_SECRET_KEY) return json({ ok: false, error: "toss_not_configured" }, 503, cors);
+    const paymentKey = String(b.paymentKey || "");
+    const orderId = String(b.orderId || "");
+    if (!paymentKey || !orderId) return json({ ok: false, error: "missing_params" }, 400, cors);
+    if (!/^[A-Za-z0-9_-]{6,64}$/.test(orderId)) return json({ ok: false, error: "bad_order_id" }, 400, cors);
+    const goalDays = Number(b.goalDays);
+    const expected = PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
+    const maybeUser = await requireUser(req, env); // null 허용(게스트)
+
+    const cr = await fetch(`${TOSS_API}/v1/payments/confirm`, {
+      method: "POST", headers: tossHeaders(env, { "Idempotency-Key": orderId }),
+      body: JSON.stringify({ paymentKey, orderId, amount: expected }),
+    });
+    let pay = await cr.json().catch(() => null);
+    let paid = cr.ok && pay?.status === "DONE" && pay?.totalAmount === expected;
+    // 이미 승인된 주문(복귀 새로고침 재호출) → 조회로 멱등 재검증
+    if (!paid && pay?.code === "ALREADY_PROCESSED_PAYMENT") {
+      const qr = await fetch(`${TOSS_API}/v1/payments/orders/${encodeURIComponent(orderId)}`, { headers: tossHeaders(env) });
+      const qp = qr.ok ? await qr.json().catch(() => null) : null;
+      if (qp?.status === "DONE" && qp?.totalAmount === expected) { paid = true; pay = qp; }
+    }
+    await recordPaymentIdempotent(env, {
+      id: orderId, payment_key: paymentKey,
+      user_id: maybeUser?.id || null,
+      email: maybeUser?.email || (b.email ? String(b.email).slice(0, 200) : null),
+      amount: pay?.totalAmount ?? null,
+      status: paid ? "DONE" : (pay?.code || pay?.status || "confirm_failed"),
+      source: "toss_single", updated_at: new Date().toISOString(),
+    });
+    return paid ? json({ ok: true, orderId }, 200, cors)
+                : json({ ok: false, error: pay?.code || "not_paid", toss: { status: pay?.status, code: pay?.code } }, 402, cors);
   }
 
   // 이하 사용자 결제 라우트 = Supabase 토큰 검증 필수. user_id/email은 검증 토큰에서만(클라 입력 신뢰 X).
