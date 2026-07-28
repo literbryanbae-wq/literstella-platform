@@ -160,6 +160,9 @@ const PORTONE_API = "https://api.portone.io";          // V2 base [CONFIRMED]
 const YANAWAN_PRICE_KRW = 3000;                         // 서버 가격 상수(빌링키 월구독·레거시)
 // 단건 결제 가격표 — 프론트 pricing.js(CHALLENGE_PRICES)와 일치. 금액은 항상 서버가 권위.
 const PRICE_BY_GOAL = { 30: 3000, 66: 5800, 100: 9800 };
+// 클래스 상품 가격표(토스 다이렉트) — 키다리 평생소장 69,000(운영자 확정, 워크북 무료판 포함).
+//   신규 클래스 상품은 여기만 추가(프론트 표시가와 이중 기재 — 서버가 권위).
+const PRICE_BY_PRODUCT = { "class-kidari-lifetime": 69000 };
 const YANAWAN_ORDER_NAME = "야나완 영어 챌린지 1개월";
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -176,6 +179,42 @@ function newPaymentId() { return `pay${crypto.randomUUID().replace(/-/g, "")}`; 
 const TOSS_API = "https://api.tosspayments.com";
 function tossHeaders(env, extra) {
   return { Authorization: `Basic ${btoa(`${env.TOSS_SECRET_KEY}:`)}`, "Content-Type": "application/json", ...(extra || {}) };
+}
+
+// 클래스 수강 권한 부여 — 결제 승인 시 class_enrollments 적재(check_my_class_access RPC가 즉시 인식 = 6강+ 해금).
+//   unique 제약 유무 불명 → 조회 후 삽입(중복 방지). 레이스 시 중복행 무해(존재 판정만 쓰임).
+async function grantClassEnrollment(env, email, bookCode, source) {
+  try {
+    const q = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&book_code=eq.${encodeURIComponent(bookCode)}&select=email&limit=1`);
+    const rows = q.ok ? await q.json().catch(() => []) : [];
+    if (Array.isArray(rows) && rows.length) return true;
+    const r = await sbFetch(env, `class_enrollments`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ email, book_code: bookCode, source: source || "toss_purchase" }) });
+    return r.ok;
+  } catch { return false; }
+}
+
+// 토스 웹훅 — 토스는 웹훅 서명을 제공하지 않음(공식) → 본문 불신, paymentKey 재조회로만 확정. 10초 내 200 필수.
+//   등록: 개발자센터 웹훅 메뉴 → https://literstella-api.literbryanbae.workers.dev/api/payment/toss-webhook
+//   역할: 승인 경로(브라우저 복귀 confirm)가 유실된 경우의 2중화 — payments 반영 + 클래스 수강 부여 보강.
+async function tossWebhook(req, env, cors) {
+  let body; try { body = await req.json(); } catch { body = {}; }
+  const pk = String(body?.data?.paymentKey || body?.paymentKey || "");
+  if (pk && env.TOSS_SECRET_KEY) {
+    try {
+      const r = await fetch(`${TOSS_API}/v1/payments/${encodeURIComponent(pk)}`, { headers: tossHeaders(env) });
+      const p = r.ok ? await r.json().catch(() => null) : null;
+      if (p?.orderId) {
+        await recordPaymentIdempotent(env, { id: p.orderId, payment_key: pk, amount: p.totalAmount ?? null, status: p.status || "unknown", updated_at: new Date().toISOString() });
+        if (p.status === "DONE") {
+          const q = await sbFetch(env, `payments?id=eq.${encodeURIComponent(p.orderId)}&select=email,source`);
+          const rows = q.ok ? await q.json().catch(() => []) : [];
+          const row = Array.isArray(rows) ? rows[0] : null;
+          if (row?.email && String(row.source || "").includes("class-kidari")) await grantClassEnrollment(env, row.email, "kidari", "toss_webhook");
+        }
+      }
+    } catch { /* 실패 시 토스가 최대 7회 재시도 */ }
+  }
+  return json({ ok: true }, 200, cors);
 }
 
 // 결제 단건 조회(reconcile) — 웹훅/응답 금액 신뢰 X, 항상 이걸로 확정
@@ -239,6 +278,8 @@ async function chargeAndVerify(env, { billingKey, customer, email, userId, sourc
 async function paymentRoute(req, env, cors, sub) {
   // 웹훅: 포트원이 직접 호출(서명검증). 사용자 인증 없음.
   if (sub === "webhook") return paymentWebhook(req, env, cors);
+  // 토스 웹훅(2026-07-20 PG 전환) — 서명 없음 → 재조회 확정 패턴.
+  if (sub === "toss-webhook") return tossWebhook(req, env, cors);
 
   let b; try { b = await req.json(); } catch { b = {}; }
   const customer = b.customer && typeof b.customer === "object" ? b.customer : undefined;
@@ -268,7 +309,10 @@ async function paymentRoute(req, env, cors, sub) {
     if (!paymentKey || !orderId) return json({ ok: false, error: "missing_params" }, 400, cors);
     if (!/^[A-Za-z0-9_-]{6,64}$/.test(orderId)) return json({ ok: false, error: "bad_order_id" }, 400, cors);
     const goalDays = Number(b.goalDays);
-    const expected = PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
+    // 상품 결정: product(클래스 등 카탈로그) 우선 → goalDays(챌린지) → 30일 폴백. 금액은 항상 서버 권위.
+    const product = String(b.product || "");
+    if (product && !PRICE_BY_PRODUCT[product]) return json({ ok: false, error: "unknown_product" }, 400, cors);
+    const expected = PRICE_BY_PRODUCT[product] || PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
     const maybeUser = await requireUser(req, env); // null 허용(게스트)
 
     const cr = await fetch(`${TOSS_API}/v1/payments/confirm`, {
@@ -283,15 +327,21 @@ async function paymentRoute(req, env, cors, sub) {
       const qp = qr.ok ? await qr.json().catch(() => null) : null;
       if (qp?.status === "DONE" && qp?.totalAmount === expected) { paid = true; pay = qp; }
     }
+    const email = maybeUser?.email || (b.email ? String(b.email).slice(0, 200).toLowerCase().trim() : null);
     await recordPaymentIdempotent(env, {
       id: orderId, payment_key: paymentKey,
       user_id: maybeUser?.id || null,
-      email: maybeUser?.email || (b.email ? String(b.email).slice(0, 200) : null),
+      email,
       amount: pay?.totalAmount ?? null,
       status: paid ? "DONE" : (pay?.code || pay?.status || "confirm_failed"),
-      source: "toss_single", updated_at: new Date().toISOString(),
+      source: product ? `toss:${product}` : "toss_single", updated_at: new Date().toISOString(),
     });
-    return paid ? json({ ok: true, orderId }, 200, cors)
+    // 클래스 상품 승인 → 수강 권한 즉시 부여(이메일 명단 매칭 → 로그인만 하면 6강+ 해금)
+    let granted = false;
+    if (paid && product === "class-kidari-lifetime" && email) {
+      granted = await grantClassEnrollment(env, email, "kidari", "toss_purchase");
+    }
+    return paid ? json({ ok: true, orderId, ...(product ? { granted } : {}) }, 200, cors)
                 : json({ ok: false, error: pay?.code || "not_paid", toss: { status: pay?.status, code: pay?.code } }, 402, cors);
   }
 

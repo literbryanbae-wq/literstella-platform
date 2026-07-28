@@ -8,7 +8,7 @@
   // ⚠️ 미배포 스캐폴딩. 포트원 승인 후 배포. 모든 위험 기능은 아래 플래그(기본 false) 뒤에 있음.
   "vars": {
     "ADMIN_API_ENABLED": "false",   // #8b 관리자 service_role 라우트 — 켤 때 true
-    "PAYMENT_ENABLED": "false",      // 포트원 결제 라우트 — 켤 때 true
+    "PAYMENT_ENABLED": "true",       // 결제 라우트 ON (2026-07-20 토스 다이렉트 전환 — toss-confirm 활성. 포트원 라우트는 코드상 휴면)
     "SUPABASE_URL": "https://bvhkvucsoetktoxzupwt.supabase.co",
     "ADMIN_EMAIL": "literbryanbae@gmail.com",
     // OTP·알림 메일 발신자 — Resend 인증한 @literstella.co.kr 도메인이라 임의 수신자에게 도달.
