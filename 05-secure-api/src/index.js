@@ -164,7 +164,9 @@ const PRICE_BY_GOAL = { 30: 3000, 66: 5800, 100: 9800 };
 //   구조 { won, books:[] } (적대검증 2026-07-29): 가격만 있고 books 매핑이 없으면 '돈 받고 미해금' 사고
 //   → books 없는 코드는 unknown_product로 거부된다. 코드 추가 = 판매 개시와 동치(앱에 전 강 실물 선행).
 //   추후 후보(콘텐츠 완비 시): anne 118000·pride 128000·littlewomen1/2 각 99000·gatsby 79000·sherlock 79800·
-//   littlewomen-pack 179800(books 3권·theory 등급 제외 서버 고정 선행)·kidari-pack 99800(부속 이행 자동화 선행).
+//   littlewomen-pack 179800(books=[littlewomen1,littlewomen2,theory])·kidari-pack 99800(🔴실물 배송 상품 — 앱 판매 부적합, 등록 금지)·
+//   stella-allinone 398000(books=강독7+theory 8권 — 스텔라 클럽 즉달 상품. 부분 소유자 이중지불 크레딧 설계 전 등록 보류, 운영자 2026-07-29).
+//   ⚠️ 2026-07-29 운영자: 앱 내 실판매 전면 중단(전 상품 클래스 사이트로) — /purchase는 토스 실가맹 심사 동선으로만 유지.
 const PRICE_BY_PRODUCT = {
   "class-kidari-lifetime": { won: 69000, books: ["kidari"] },
 };
