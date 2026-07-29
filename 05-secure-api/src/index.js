@@ -7,6 +7,7 @@
 // =============================================================
 
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
+import { contentPointRoute } from "./content-point-service.mjs";
 
 // ── CORS ─────────────────────────────────────────────────
 function corsHeaders(req, env) {
@@ -913,7 +914,12 @@ export default {
     const path = url.pathname;
 
     // health
-    if (path === "/api/health") return json({ ok: true, admin: env.ADMIN_API_ENABLED === "true", payment: env.PAYMENT_ENABLED === "true" }, 200, cors);
+    if (path === "/api/health") return json({
+      ok: true,
+      admin: env.ADMIN_API_ENABLED === "true",
+      payment: env.PAYMENT_ENABLED === "true",
+      contentPoints: env.CONTENT_POINTS_ENABLED === "true",
+    }, 200, cors);
 
     // 이메일 인증 OTP (회원가입) — 플래그 없이 항상 열림. RESEND_API_KEY·OTP_SECRET 시크릿 필요.
     if (path === "/api/auth/otp/send" || path === "/api/auth/otp/verify") {
@@ -952,6 +958,22 @@ export default {
     if (path === "/api/lifecycle-email") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return lifecycleEmail(req, env, cors);
+    }
+
+    // Point-content purchases are isolated from cash payment routes. Pricing,
+    // ownership tiers and balance checks are server-authoritative; the atomic
+    // database RPC writes the debit and all permanent entitlements together.
+    if (path.startsWith("/api/points/content/")) {
+      if (env.CONTENT_POINTS_ENABLED !== "true") {
+        return json({ ok: false, error: "disabled" }, 404, cors);
+      }
+      return contentPointRoute(
+        req,
+        env,
+        cors,
+        path.replace("/api/points/content/", ""),
+        { json, requireUser, sbFetch },
+      );
     }
 
     // 관리자 (#8b) — 플래그 OFF면 404
