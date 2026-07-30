@@ -8,6 +8,7 @@
 
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { contentPointRoute } from "./content-point-service.mjs";
+import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
 
 // ── CORS ─────────────────────────────────────────────────
 function corsHeaders(req, env) {
@@ -507,15 +508,17 @@ function otpEmailHtml(code) {
     + `<p style="margin:16px 0 0;font-size:13px;color:#8a8270;">본인이 요청하지 않았다면 이 메일을 무시하세요.</p>`;
   return brandEmailHtml(body);
 }
-async function sendResendEmail(env, { to, subject, html }) {
+async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
   if (!env.RESEND_API_KEY) return false;
   const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>"; // 도메인 인증 후 인증@literstella.co.kr
   // 429/5xx 지수 백오프 재시도 2회 + 실패 로깅(발송 감사 2026-07-20 P0: 대량 유입 시 순간 레이트 초과가 조용한 send_failed로 전락하던 것).
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
+      const headers = { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" };
+      if (idempotencyKey) headers["Idempotency-Key"] = String(idempotencyKey).slice(0, 256);
       const r = await fetch("https://api.resend.com/emails", {
         method: "POST",
-        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ from, to: [to], subject, html }),
       });
       if (r.ok) return true;
@@ -958,6 +961,18 @@ export default {
     if (path === "/api/lifecycle-email") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return lifecycleEmail(req, env, cors);
+    }
+
+    // 스텔라 등급 신청 메일: 회원 신청 → 관리자, 관리자 쿠폰 입력 → 회원 이메일.
+    // 금액·수신자는 브라우저 payload가 아니라 service_role로 신청 행을 다시 읽어 확정한다.
+    if (path.startsWith("/api/stella-upgrade/")) {
+      return stellaUpgradeEmailRoute(
+        req,
+        env,
+        cors,
+        path.replace("/api/stella-upgrade/", ""),
+        { json, requireUser, sbFetch, sendEmail: sendResendEmail, brandEmailHtml },
+      );
     }
 
     // Point-content purchases are isolated from cash payment routes. Pricing,
