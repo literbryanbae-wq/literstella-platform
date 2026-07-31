@@ -29,7 +29,13 @@ async function sbFetch(_env, path, init = {}) {
     return rows([{ book_code: 'gatsby' }]);
   }
   if (path.startsWith('point_transactions?')) {
-    return rows([{ amount: 100 }, { amount: -10 }]);
+    return rows([
+      { amount: 100, reason: 'checkin' },
+      { amount: -10, reason: 'lecture' },
+    ]);
+  }
+  if (path.startsWith('user_badges?')) {
+    return rows([{ badge_id: 'finish_B001' }]);
   }
   if (path.startsWith('content_entitlements?')) {
     return rows([{ surface: 'story', episode_no: 6 }]);
@@ -90,7 +96,7 @@ const quote = await call('quote', {
 assert.equal(quote.status, 200);
 assert.equal(quote.body.quote.ownedCount, 3);
 assert.equal(quote.body.quote.discountPct, 20);
-assert.equal(quote.body.quote.lyraMode, 'tutor');
+assert.equal('lyraMode' in quote.body.quote, false);
 assert.equal(quote.body.quote.reason, 'story_to_ai_upgrade');
 assert.equal(quote.body.quote.payablePoints, 4);
 assert.equal(quote.body.quote.balance, 90);
@@ -142,5 +148,18 @@ const entitlements = await call('entitlements', { book: 'future-ai' });
 assert.equal(entitlements.status, 200);
 assert.deepEqual(entitlements.body.lectures, []);
 assert.deepEqual(entitlements.body.stories, [6]);
+assert.equal(entitlements.body.stellaUnlocked, false);
+assert.equal(entitlements.body.realization.label, '원서 독자');
+
+const progress = await call('progress', {});
+assert.equal(progress.status, 200);
+assert.equal(progress.body.availablePoints, 90);
+assert.equal(progress.body.cumulativeEarnedPoints, 100);
+assert.equal(progress.body.pointMode, 'helper');
+assert.equal(progress.body.effectiveMode, 'helper');
+assert.equal(progress.body.pointsToNext, 400);
+assert.equal(progress.body.realization.completedCount, 1);
+assert.equal(progress.body.realization.label, '원서 독자');
+assert.equal(progress.body.stellaUnlocked, false);
 
 console.log('secure-api content-point-service-test: all assertions passed');

@@ -3,7 +3,7 @@
 // Keep CONTENT_POINT_POLICY_VERSION aligned with:
 // 02-challenge/literstella-challenge/src/lib/contentPointPricing.js
 
-export const CONTENT_POINT_POLICY_VERSION = '2026-07-29-v1';
+export const CONTENT_POINT_POLICY_VERSION = '2026-07-31-v2';
 
 export const CONTENT_SURFACE = Object.freeze({
   STORY: 'story',
@@ -28,14 +28,14 @@ export const OWNERSHIP_DISCOUNT_PCT = Object.freeze([
 ]);
 
 export const OWNERSHIP_LEVELS = Object.freeze([
-  { count: 0, discountPct: 0, lyraMode: 'helper', milestone: 'member' },
-  { count: 1, discountPct: 10, lyraMode: 'mate', milestone: 'student' },
-  { count: 2, discountPct: 15, lyraMode: 'mate', milestone: 'student' },
-  { count: 3, discountPct: 20, lyraMode: 'tutor', milestone: 'bibliophile' },
-  { count: 4, discountPct: 25, lyraMode: 'tutor', milestone: 'bibliophile' },
-  { count: 5, discountPct: 30, lyraMode: 'soul', milestone: 'bibliophile' },
-  { count: 6, discountPct: 50, lyraMode: 'soul', milestone: 'bibliophile' },
-  { count: 7, discountPct: 80, lyraMode: 'stella', milestone: 'stella_club' },
+  { count: 0, discountPct: 0 },
+  { count: 1, discountPct: 10 },
+  { count: 2, discountPct: 15 },
+  { count: 3, discountPct: 20 },
+  { count: 4, discountPct: 25 },
+  { count: 5, discountPct: 30 },
+  { count: 6, discountPct: 50 },
+  { count: 7, discountPct: 80 },
 ]);
 
 const CASH_ONLY_SURFACES = new Set([
@@ -106,6 +106,7 @@ export function quoteContentItem({
   book,
   episodeNo,
   ownedCount = 0,
+  isStella = false,
   hasStoryAccess = false,
   hasAiLectureAccess = false,
   hasNewsletterSubscription = false,
@@ -120,8 +121,7 @@ export function quoteContentItem({
     episodeNo: no,
     ownedCount: level.count,
     discountPct: level.discountPct,
-    lyraMode: level.lyraMode,
-    milestone: level.milestone,
+    isStella: !!isStella,
     permanent: false,
     entitlementKeys: [],
   };
@@ -153,7 +153,7 @@ export function quoteContentItem({
   const publicPreview = no <= FREE_EPISODE_MAX;
   const permanentSampler = ALWAYS_FREE_BOOKS.has(normalizedBook);
   const stellaShowcase =
-    level.count === 7 && STELLA_SHOWCASE_BOOKS.has(normalizedBook);
+    !!isStella && STELLA_SHOWCASE_BOOKS.has(normalizedBook);
 
   if (publicPreview || permanentSampler || stellaShowcase) {
     return {
@@ -194,7 +194,11 @@ export function quoteContentItem({
   };
 }
 
-export function quoteRemainingBundle({ items = [], ownedCount = 0 } = {}) {
+export function quoteRemainingBundle({
+  items = [],
+  ownedCount = 0,
+  isStella = false,
+} = {}) {
   const level = ownershipLevelForCount(ownedCount);
   const uniqueItems = new Map();
   for (const item of Array.isArray(items) ? items : []) {
@@ -210,7 +214,7 @@ export function quoteRemainingBundle({ items = [], ownedCount = 0 } = {}) {
   }
 
   const quotes = [...uniqueItems.values()].map((item) =>
-    quoteContentItem({ ...item, ownedCount: level.count }),
+    quoteContentItem({ ...item, ownedCount: level.count, isStella }),
   );
   const pointItems = quotes.filter((quote) => quote.access === 'points');
   const excludedItems = quotes.filter((quote) => quote.access !== 'points');
@@ -227,8 +231,7 @@ export function quoteRemainingBundle({ items = [], ownedCount = 0 } = {}) {
       ownedCount: level.count,
       discountPct: level.discountPct,
       bundleDiscountPct: REMAINING_BUNDLE_DISCOUNT_PCT,
-      lyraMode: level.lyraMode,
-      milestone: level.milestone,
+      isStella: !!isStella,
       subtotalPoints: 0,
       payablePoints: 0,
       effectiveDiscountPct: 0,
@@ -253,8 +256,7 @@ export function quoteRemainingBundle({ items = [], ownedCount = 0 } = {}) {
     ownedCount: level.count,
     discountPct: level.discountPct,
     bundleDiscountPct: REMAINING_BUNDLE_DISCOUNT_PCT,
-    lyraMode: level.lyraMode,
-    milestone: level.milestone,
+    isStella: !!isStella,
     subtotalPoints,
     rawPoints,
     payablePoints,

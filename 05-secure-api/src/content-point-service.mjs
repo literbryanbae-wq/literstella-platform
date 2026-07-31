@@ -9,6 +9,11 @@ import {
   quoteContentItem,
   quoteRemainingBundle,
 } from './content-point-pricing.mjs';
+import {
+  LYRA_POLICY_VERSION,
+  pointProgressFromTransactions,
+  resolveLyraProgress,
+} from './lyra-policy.mjs';
 
 const CLASSIC_BOOK_CODES = new Set([
   'kidari',
@@ -19,6 +24,15 @@ const CLASSIC_BOOK_CODES = new Set([
   'littlewomen2',
   'sherlock',
 ]);
+
+const CLASSIC_BADGE_CREDITS = Object.freeze({
+  finish_B001: 1,
+  finish_B018: 1,
+  finish_B005: 1,
+  finish_B013: 1,
+  finish_B009: 2,
+  finish_B017: 1,
+});
 
 const POINT_SURFACES = new Set([
   CONTENT_SURFACE.STORY,
@@ -119,6 +133,47 @@ async function fetchBalance(env, sbFetch, userId) {
   return rows.reduce((sum, row) => sum + (Number(row?.amount) || 0), 0);
 }
 
+async function fetchPointProgress(env, sbFetch, userId) {
+  const rows = await fetchRows(
+    env,
+    sbFetch,
+    `point_transactions?user_id=eq.${escapeFilterValue(userId)}&select=amount,reason`,
+  );
+  return pointProgressFromTransactions(rows);
+}
+
+async function fetchClassicCompletion(env, sbFetch, userId, email) {
+  if (elevatedStellaEmails(env).has(String(email || '').trim().toLowerCase())) {
+    return {
+      known: true,
+      completedCount: 7,
+      completedBadgeIds: Object.keys(CLASSIC_BADGE_CREDITS),
+    };
+  }
+  const rows = await fetchRows(
+    env,
+    sbFetch,
+    `user_badges?user_id=eq.${escapeFilterValue(userId)}&select=badge_id`,
+  );
+  const badgeIds = new Set(
+    rows
+      .map((row) => String(row?.badge_id || ''))
+      .filter((badgeId) => badgeId in CLASSIC_BADGE_CREDITS),
+  );
+  const completedCount = Math.min(
+    7,
+    [...badgeIds].reduce(
+      (sum, badgeId) => sum + CLASSIC_BADGE_CREDITS[badgeId],
+      0,
+    ),
+  );
+  return {
+    known: true,
+    completedCount,
+    completedBadgeIds: [...badgeIds].sort(),
+  };
+}
+
 async function fetchEntitlements(env, sbFetch, userId, book) {
   const rows = await fetchRows(
     env,
@@ -175,6 +230,7 @@ async function buildItemQuote({
   pointUser,
   ownership,
   entitlements,
+  completion,
   surface,
   book,
   episodeNo,
@@ -184,6 +240,7 @@ async function buildItemQuote({
     book,
     episodeNo,
     ownedCount: ownership.level.count,
+    isStella: completion.completedCount === 7,
     ...flagsFor(entitlements, book, episodeNo),
   });
   if (quote.access === 'points') {
@@ -204,6 +261,7 @@ async function buildBundleQuote({
   pointUser,
   ownership,
   entitlements,
+  completion,
   book,
 }) {
   const catalog = await fetchCatalogBook(env, sbFetch, book);
@@ -217,7 +275,11 @@ async function buildBundleQuote({
     }))
     .filter((item) => item.episodeNo);
   return {
-    ...quoteRemainingBundle({ items, ownedCount: ownership.level.count }),
+    ...quoteRemainingBundle({
+      items,
+      ownedCount: ownership.level.count,
+      isStella: completion.completedCount === 7,
+    }),
     book,
     userId: pointUser.id,
     ownershipBooks: ownership.books,
@@ -301,12 +363,30 @@ function publicQuote(quote, balance) {
 async function buildContext(env, sbFetch, authUser, book) {
   const pointUser = await resolvePointUser(env, sbFetch, authUser);
   if (!pointUser) return { error: 'profile_missing' };
-  const [ownership, entitlements, balance] = await Promise.all([
+  const [ownership, entitlements, balance, completion] = await Promise.all([
     fetchOwnership(env, sbFetch, authUser.email),
     fetchEntitlements(env, sbFetch, pointUser.id, book),
     fetchBalance(env, sbFetch, pointUser.id),
+    fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
   ]);
-  return { pointUser, ownership, entitlements, balance };
+  return { pointUser, ownership, entitlements, balance, completion };
+}
+
+async function buildMemberProgress(env, sbFetch, authUser) {
+  const pointUser = await resolvePointUser(env, sbFetch, authUser);
+  if (!pointUser) return { error: 'profile_missing' };
+  const [points, completion] = await Promise.all([
+    fetchPointProgress(env, sbFetch, pointUser.id),
+    fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
+  ]);
+  return {
+    ...points,
+    ...resolveLyraProgress({
+      cumulativeEarnedPoints: points.cumulativeEarnedPoints,
+      classicCompletedCount: completion.completedCount,
+      completionKnown: completion.known,
+    }),
+  };
 }
 
 async function quoteRequest(env, sbFetch, authUser, body) {
@@ -404,6 +484,18 @@ export async function contentPointRoute(req, env, cors, sub, {
   }
 
   try {
+    if (sub === 'progress') {
+      const progress = await buildMemberProgress(env, sbFetch, authUser);
+      if (progress.error) {
+        return json({ ok: false, error: progress.error }, 409, cors);
+      }
+      return json({
+        ok: true,
+        ...progress,
+        policyVersion: LYRA_POLICY_VERSION,
+      }, 200, cors);
+    }
+
     if (sub === 'entitlements') {
       const book = normalizeBookCode(body?.book);
       if (!book || !/^[a-z0-9_-]{1,64}$/.test(book)) {
@@ -428,7 +520,11 @@ export async function contentPointRoute(req, env, cors, sub, {
         balance: context.balance,
         ownedCount: context.ownership.level.count,
         discountPct: context.ownership.level.discountPct,
-        lyraMode: context.ownership.level.lyraMode,
+        realization: resolveLyraProgress({
+          classicCompletedCount: context.completion.completedCount,
+          completionKnown: context.completion.known,
+        }).realization,
+        stellaUnlocked: context.completion.completedCount === 7,
       }, 200, cors);
     }
 

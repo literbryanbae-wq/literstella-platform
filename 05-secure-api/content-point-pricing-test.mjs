@@ -8,7 +8,7 @@ import {
   quoteRemainingBundle,
 } from './src/content-point-pricing.mjs';
 
-assert.equal(CONTENT_POINT_POLICY_VERSION, '2026-07-29-v1');
+assert.equal(CONTENT_POINT_POLICY_VERSION, '2026-07-31-v2');
 assert.deepEqual(OWNERSHIP_DISCOUNT_PCT, [0, 10, 15, 20, 25, 30, 50, 80]);
 
 const ai = (ownedCount, extra = {}) => quoteContentItem({
@@ -34,8 +34,9 @@ assert.deepEqual(
   [5, 4, 4, 4, 3, 3, 2, 1],
 );
 assert.equal(ai(0, { book: 'oz' }).access, 'points');
-assert.equal(ai(7, { book: 'oz' }).reason, 'stella_showcase');
-assert.equal(ai(7, { book: 'we-do-not-part' }).reason, 'stella_showcase');
+assert.equal(ai(7, { book: 'oz' }).access, 'points');
+assert.equal(ai(0, { book: 'oz', isStella: true }).reason, 'stella_showcase');
+assert.equal(ai(7, { book: 'we-do-not-part', isStella: true }).reason, 'stella_showcase');
 assert.equal(ai(0, { book: 'happy-prince', episodeNo: 30 }).reason, 'permanent_sampler');
 assert.equal(ai(0, { hasStoryAccess: true }).payablePoints, 5);
 assert.deepEqual(
@@ -54,5 +55,7 @@ const bundle = quoteRemainingBundle({
 assert.equal(bundle.subtotalPoints, 100);
 assert.equal(bundle.payablePoints, 15);
 assert.equal(bundle.effectiveDiscountPct, 85);
+assert.equal('lyraMode' in bundle, false);
+assert.equal('milestone' in bundle, false);
 
 console.log('secure-api content-point-pricing-test: all assertions passed');
