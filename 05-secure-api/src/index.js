@@ -56,7 +56,7 @@ async function requireAdmin(req, env) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   return verifyAdminToken(env, token); // email or null
 }
-// 사용자 인증: 프론트가 보낸 Supabase access token(X-User-Token)을 서버에서 검증 → {id,email} or null.
+// 사용자 인증: 프론트가 보낸 Supabase access token(X-User-Token)을 서버에서 검증 → {id,email,metadata} or null.
 // 결제 라우트는 토큰의 검증 user_id만 신뢰(클라가 보낸 userId/email 신뢰 금지 — 타인 빌링키 청구 차단).
 async function requireUser(req, env) {
   const tok = req.headers.get("X-User-Token") || "";
@@ -65,7 +65,11 @@ async function requireUser(req, env) {
     const r = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${tok}` } });
     if (!r.ok) return null;
     const u = await r.json().catch(() => null);
-    return u && u.id ? { id: u.id, email: String(u.email || "").toLowerCase() } : null;
+    return u && u.id ? {
+      id: u.id,
+      email: String(u.email || "").toLowerCase(),
+      metadata: u.user_metadata && typeof u.user_metadata === "object" ? u.user_metadata : {},
+    } : null;
   } catch { return null; }
 }
 // 빌링키가 이 사용자 소유인지 확인(charge/subscribe 시) — 등록(issue) 시 바인딩한 user_id와 대조.
@@ -536,6 +540,157 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
   return false;
 }
 
+const RESEND_MIGRATION_TEMPLATE = "8511cc4c-1f05-412c-a1c0-cfea2358ca2f";
+const MIGRATION_CRON = "50 23 30 7 *"; // 2026-07-31 08:50 KST, one-time send
+
+async function fetchAllResendContacts(env) {
+  const contacts = [];
+  let after = "";
+  for (let page = 0; page < 100; page++) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (after) query.set("after", after);
+    let response = null;
+    for (let attempt = 0; attempt <= 4; attempt++) {
+      response = await fetch(
+        `https://api.resend.com/contacts?${query}`,
+        { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } },
+      );
+      if (response.ok) break;
+      if (response.status !== 429 && response.status < 500) break;
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+    }
+    if (!response.ok) throw new Error(`resend_contacts_${response.status}`);
+    const body = await response.json().catch(() => null);
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    contacts.push(...rows);
+    if (!body?.has_more || !rows.length) break;
+    const next = String(rows[rows.length - 1]?.id || "");
+    if (!next || next === after) throw new Error("resend_contacts_pagination");
+    after = next;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  return contacts;
+}
+
+async function sendResendTemplateBatches(env, contacts, templateId, variablesFor, campaignKey) {
+  const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
+  let sent = 0;
+  let failed = 0;
+  for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
+    const selected = contacts.slice(offset, offset + RESEND_BATCH_SIZE);
+    const batch = selected.map((contact) => ({
+      from,
+      to: [contact.email],
+      template: { id: templateId, variables: variablesFor(contact) },
+    }));
+    let ok = false;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const response = await fetch("https://api.resend.com/emails/batch", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${campaignKey}-${offset}`,
+          },
+          body: JSON.stringify(batch),
+        });
+        if (response.ok) {
+          ok = true;
+          break;
+        }
+        const retryable = response.status === 429 || response.status >= 500;
+        const detail = await response.text().catch(() => "");
+        console.log(JSON.stringify({
+          evt: "campaign_batch_fail",
+          campaignKey,
+          offset,
+          status: response.status,
+          detail: detail.slice(0, 160),
+        }));
+        if (!retryable) break;
+      } catch { /* retry below */ }
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+    if (ok) sent += batch.length;
+    else failed += batch.length;
+    if (offset + RESEND_BATCH_SIZE < contacts.length) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  }
+  console.log(JSON.stringify({ evt: "campaign_complete", campaignKey, sent, failed }));
+  return { sent, failed };
+}
+
+async function runMigrationNoticeCampaign(env) {
+  const contacts = await fetchAllResendContacts(env);
+  const byEmail = new Map();
+  for (const contact of contacts) {
+    const email = String(contact?.email || "").trim().toLowerCase();
+    if (EMAIL_RE.test(email) && contact?.unsubscribed !== true) byEmail.set(email, { ...contact, email });
+  }
+  return sendResendTemplateBatches(
+    env,
+    [...byEmail.values()],
+    RESEND_MIGRATION_TEMPLATE,
+    (contact) => ({
+      MEMBER_NAME: String(contact.first_name || "수강생").trim() || "수강생",
+      CONNECTION_URL: "https://class-new.literstella.co.kr/verify?utm_source=resend&utm_medium=email&utm_campaign=lifetime_course_migration_2608",
+      STABILIZATION_DATE: "2026년 8월 31일",
+      SUPPORT_URL: "http://pf.kakao.com/_xkxdZxeb/chat",
+      PRIVACY_URL: "https://read.literstella.co.kr/privacy",
+    }),
+    "migration-20260801-0800",
+  );
+}
+
+// 사용자가 클래스 연결 화면에서 선택 마케팅 수신에 명시적으로 동의한 경우에만
+// 오후 Stella 혜택 Broadcast 세그먼트에 본인 이메일을 추가한다.
+async function syncStellaMarketingOptIn(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "auth" }, 401, cors);
+  if (user.metadata?.marketing_opt_in !== true || !user.metadata?.marketing_opt_in_at) {
+    return json({ ok: false, error: "consent_required" }, 403, cors);
+  }
+  if (!env.RESEND_API_KEY || !env.RESEND_STELLA_OPTIN_SEGMENT_ID) {
+    return json({ ok: false, error: "resend_config_missing" }, 503, cors);
+  }
+
+  const headers = {
+    Authorization: `Bearer ${env.RESEND_API_KEY}`,
+    "Content-Type": "application/json",
+  };
+  const email = encodeURIComponent(user.email);
+  const segmentId = encodeURIComponent(env.RESEND_STELLA_OPTIN_SEGMENT_ID);
+
+  try {
+    let response = await fetch(`https://api.resend.com/contacts/${email}/segments/${segmentId}`, {
+      method: "POST",
+      headers,
+    });
+
+    if (response.status === 404) {
+      response = await fetch("https://api.resend.com/contacts", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          email: user.email,
+          unsubscribed: false,
+          segments: [{ id: env.RESEND_STELLA_OPTIN_SEGMENT_ID }],
+        }),
+      });
+    }
+
+    if (!response.ok) {
+      console.log(JSON.stringify({ evt: "stella_optin_sync_fail", status: response.status, userId: user.id }));
+      return json({ ok: false, error: "resend_sync_failed" }, 502, cors);
+    }
+    return json({ ok: true }, 200, cors);
+  } catch {
+    return json({ ok: false, error: "resend_network" }, 502, cors);
+  }
+}
+
 // Resend 마케팅 플랜의 1회 대상 한도에 맞춘 애플리케이션 세그먼트.
 // Resend API batch 자체는 최대 100건이므로, 선택된 1,000명 세그먼트를 100건씩 전송한다.
 const RESEND_AUDIENCE_SEGMENT_SIZE = 1000;
@@ -963,6 +1118,11 @@ export default {
       return lifecycleEmail(req, env, cors);
     }
 
+    if (path === "/api/marketing/subscribe-stella") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return syncStellaMarketingOptIn(req, env, cors);
+    }
+
     // 스텔라 등급 신청 메일: 회원 신청 → 관리자, 관리자 쿠폰 입력 → 회원 이메일.
     // 금액·수신자는 브라우저 payload가 아니라 service_role로 신청 행을 다시 읽어 확정한다.
     if (path.startsWith("/api/stella-upgrade/")) {
@@ -1021,6 +1181,11 @@ export default {
   // 자동갱신 Cron (wrangler triggers 활성 후 매일 1회) — next_charge_at 도래 구독 재청구.
   // 단일 모델(cron만 청구, 포트원 스케줄 미사용)이라 이중청구 없음.
   async scheduled(event, env, ctx) {
+    const scheduledDate = new Date(event.scheduledTime);
+    if (event.cron === MIGRATION_CRON) {
+      if (scheduledDate.getUTCFullYear() === 2026) ctx.waitUntil(runMigrationNoticeCampaign(env));
+      return;
+    }
     if (env.PAYMENT_ENABLED !== "true") return;
     const nowIso = new Date().toISOString();
     const DAY_MS = 24 * 60 * 60 * 1000;
