@@ -34,6 +34,15 @@ const CLASSIC_BADGE_CREDITS = Object.freeze({
   finish_B017: 1,
 });
 
+const CLASSIC_BOOKS_BY_BADGE = Object.freeze({
+  finish_B001: ['kidari'],
+  finish_B018: ['gatsby'],
+  finish_B005: ['anne'],
+  finish_B013: ['pride'],
+  finish_B009: ['littlewomen1', 'littlewomen2'],
+  finish_B017: ['sherlock'],
+});
+
 const POINT_SURFACES = new Set([
   CONTENT_SURFACE.STORY,
   CONTENT_SURFACE.AI_LECTURE,
@@ -150,27 +159,48 @@ async function fetchClassicCompletion(env, sbFetch, userId, email) {
       completedBadgeIds: Object.keys(CLASSIC_BADGE_CREDITS),
     };
   }
-  const rows = await fetchRows(
-    env,
-    sbFetch,
-    `user_badges?user_id=eq.${escapeFilterValue(userId)}&select=badge_id`,
-  );
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const [rows, legacyRows] = await Promise.all([
+    fetchRows(
+      env,
+      sbFetch,
+      `user_badges?user_id=eq.${escapeFilterValue(userId)}&select=badge_id`,
+    ),
+    fetchRows(
+      env,
+      sbFetch,
+      `legacy_progress?email=eq.${escapeFilterValue(normalizedEmail)}&select=book_code,pct,done,lectures_total`,
+    ),
+  ]);
   const badgeIds = new Set(
     rows
       .map((row) => String(row?.badge_id || ''))
       .filter((badgeId) => badgeId in CLASSIC_BADGE_CREDITS),
   );
-  const completedCount = Math.min(
-    7,
-    [...badgeIds].reduce(
-      (sum, badgeId) => sum + CLASSIC_BADGE_CREDITS[badgeId],
-      0,
-    ),
+  const completedBooks = new Set(
+    [...badgeIds].flatMap((badgeId) => CLASSIC_BOOKS_BY_BADGE[badgeId] || []),
   );
+  for (const row of legacyRows) {
+    const bookCode = String(row?.book_code || '').trim().toLowerCase();
+    if (!CLASSIC_BOOK_CODES.has(bookCode)) continue;
+    const doneCount = Array.isArray(row?.done) ? row.done.length : 0;
+    const lecturesTotal = Number(row?.lectures_total) || 0;
+    const completed = Number(row?.pct) >= 100
+      || (lecturesTotal > 0 && doneCount >= lecturesTotal);
+    if (completed) completedBooks.add(bookCode);
+  }
   return {
-    known: true,
-    completedCount,
+    known: badgeIds.size > 0 || legacyRows.length > 0,
+    completedCount: Math.min(7, completedBooks.size),
     completedBadgeIds: [...badgeIds].sort(),
+    completedBooks: [...completedBooks].sort(),
+  };
+}
+
+function completionWithOwnershipKnowledge(completion, ownership) {
+  return {
+    ...completion,
+    known: completion.known || ownership.level.count === 0,
   };
 }
 
@@ -369,22 +399,30 @@ async function buildContext(env, sbFetch, authUser, book) {
     fetchBalance(env, sbFetch, pointUser.id),
     fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
   ]);
-  return { pointUser, ownership, entitlements, balance, completion };
+  return {
+    pointUser,
+    ownership,
+    entitlements,
+    balance,
+    completion: completionWithOwnershipKnowledge(completion, ownership),
+  };
 }
 
 async function buildMemberProgress(env, sbFetch, authUser) {
   const pointUser = await resolvePointUser(env, sbFetch, authUser);
   if (!pointUser) return { error: 'profile_missing' };
-  const [points, completion] = await Promise.all([
+  const [points, ownership, completion] = await Promise.all([
     fetchPointProgress(env, sbFetch, pointUser.id),
+    fetchOwnership(env, sbFetch, authUser.email),
     fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
   ]);
+  const resolvedCompletion = completionWithOwnershipKnowledge(completion, ownership);
   return {
     ...points,
     ...resolveLyraProgress({
       cumulativeEarnedPoints: points.cumulativeEarnedPoints,
-      classicCompletedCount: completion.completedCount,
-      completionKnown: completion.known,
+      classicCompletedCount: resolvedCompletion.completedCount,
+      completionKnown: resolvedCompletion.known,
     }),
   };
 }

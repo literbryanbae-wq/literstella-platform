@@ -12,6 +12,7 @@ const authUser = {
 };
 const pointUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const rpcCalls = [];
+let progressScenario = 'badge';
 
 const rows = (value, status = 200) => new Response(JSON.stringify(value), {
   status,
@@ -35,7 +36,15 @@ async function sbFetch(_env, path, init = {}) {
     ]);
   }
   if (path.startsWith('user_badges?')) {
-    return rows([{ badge_id: 'finish_B001' }]);
+    return rows(progressScenario === 'badge' ? [{ badge_id: 'finish_B001' }] : []);
+  }
+  if (path.startsWith('legacy_progress?')) {
+    return rows(progressScenario === 'legacy' ? [{
+      book_code: 'anne',
+      pct: 100,
+      done: [1, 2, 3],
+      lectures_total: 3,
+    }] : []);
   }
   if (path.startsWith('content_entitlements?')) {
     return rows([{ surface: 'story', episode_no: 6 }]);
@@ -161,5 +170,17 @@ assert.equal(progress.body.pointsToNext, 400);
 assert.equal(progress.body.realization.completedCount, 1);
 assert.equal(progress.body.realization.label, '원서 독자');
 assert.equal(progress.body.stellaUnlocked, false);
+
+progressScenario = 'unknown';
+const unknownProgress = await call('progress', {});
+assert.equal(unknownProgress.status, 200);
+assert.equal(unknownProgress.body.realization.completionKnown, false);
+assert.equal(unknownProgress.body.realization.completedCount, 0);
+
+progressScenario = 'legacy';
+const legacyProgress = await call('progress', {});
+assert.equal(legacyProgress.status, 200);
+assert.equal(legacyProgress.body.realization.completionKnown, true);
+assert.equal(legacyProgress.body.realization.completedCount, 1);
 
 console.log('secure-api content-point-service-test: all assertions passed');
