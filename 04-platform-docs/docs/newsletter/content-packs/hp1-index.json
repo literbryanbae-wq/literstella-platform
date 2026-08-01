@@ -15,6 +15,10 @@
   "class_5step_url": "https://class.literstella.co.kr/p/new-5",
   "cafe_url": "https://cafe.naver.com/literenglish"
  },
+ "_productionStatus": "EDITORIAL_REVIEW_REQUIRED",
+ "_releaseStatus": "RELEASE_QA_BLOCKED",
+ "_provenance": "LiterStella instructor-created educational content; editorial review required before release.",
+ "_mediaPolicy": "No synthesized URLs. Missing media remains null with hasAudio/hasImage false.",
  "days": [
   {
    "day": 1,
@@ -52,6 +56,80 @@
    "file": "hp1-day05.json",
    "one_sentence": "He will have that scar forever.",
    "warnings": []
+  },
+  {
+   "day": 6,
+   "pages": "p.16-18",
+   "file": "hp1-day06.json",
+   "one_sentence": "He gingerly set the parcel down, then turned on his heel.",
+   "one_sentence_label": "오늘의 연습 문장 · 원작 인용문 아님",
+   "hasAudio": false,
+   "hasImage": false,
+   "audioUrl": null,
+   "illustration": null,
+   "warnings": [
+    "CHAPTER_BOUNDARY_UNCONFIRMED",
+    "RELEASE_QA_BLOCKED"
+   ]
+  },
+  {
+   "day": 7,
+   "pages": "p.19-21",
+   "file": "hp1-day07.json",
+   "one_sentence": "I am used to looking after small details, not to mention sudden changes.",
+   "one_sentence_label": "오늘의 연습 문장 · 원작 인용문 아님",
+   "hasAudio": false,
+   "hasImage": false,
+   "audioUrl": null,
+   "illustration": null,
+   "warnings": [
+    "CHAPTER_BOUNDARY_UNCONFIRMED",
+    "RELEASE_QA_BLOCKED"
+   ]
+  },
+  {
+   "day": 8,
+   "pages": "p.22-24",
+   "file": "hp1-day08.json",
+   "one_sentence": "For a change, he gave a few pretend sobs, as though he were truly upset.",
+   "one_sentence_label": "오늘의 연습 문장 · 원작 인용문 아님",
+   "hasAudio": false,
+   "hasImage": false,
+   "audioUrl": null,
+   "illustration": null,
+   "warnings": [
+    "RELEASE_QA_BLOCKED"
+   ]
+  },
+  {
+   "day": 9,
+   "pages": "p.25-27",
+   "file": "hp1-day09.json",
+   "one_sentence": "They might fall back on an old habit when the good mood feels too good to last.",
+   "one_sentence_label": "오늘의 연습 문장 · 원작 인용문 아님",
+   "hasAudio": false,
+   "hasImage": false,
+   "audioUrl": null,
+   "illustration": null,
+   "warnings": [
+    "RELEASE_QA_BLOCKED"
+   ]
+  },
+  {
+   "day": 10,
+   "pages": "p.28-30",
+   "file": "hp1-day10.json",
+   "one_sentence": "What came next was so sudden that everyone watched the snake uncoil and slither away.",
+   "one_sentence_label": "오늘의 연습 문장 · 원작 인용문 아님",
+   "hasAudio": false,
+   "hasImage": false,
+   "audioUrl": null,
+   "illustration": null,
+   "warnings": [
+    "CHAPTER_BOUNDARY_UNCONFIRMED",
+    "RELEASE_QA_BLOCKED"
+   ]
   }
  ]
 }
+
