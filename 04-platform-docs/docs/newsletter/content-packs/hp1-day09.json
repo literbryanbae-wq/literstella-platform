@@ -1,0 +1,87 @@
+{
+  "book": {
+    "id": "hp1",
+    "series_no": 1,
+    "title_en": "Harry Potter and the Sorcerer's Stone",
+    "title_ko": "해리포터와 마법사의 돌",
+    "author": "J.K. Rowling",
+    "year": 1997,
+    "total_days": 100,
+    "media_type": "live",
+    "brand_note": "HP 상표=유료 상품명 사용 금지. 본문0%·강의100%. 1권=5년 전 강독(품질 주의).",
+    "free_reading_playlist": "https://youtube.com/playlist?list=PLARsitvDhfaKdd7XctJriviiskDgGXHxI",
+    "club_url": "https://cafe.naver.com/literenglish/25286",
+    "workbook_url": "https://drive.google.com/file/d/1xNOPkGLXnOskmILbIZThoQbPwVztHXxU/view",
+    "class_5step_url": "https://class.literstella.co.kr/p/new-5",
+    "cafe_url": "https://cafe.naver.com/literenglish"
+  },
+  "day": 9,
+  "pages": "p.25-27",
+  "season": "Spring 2026",
+  "chapter": {
+    "no": "II",
+    "title_en": "The Vanishing Glass",
+    "title_ko": "평범하지 않은 하루와 파충류관"
+  },
+  "intro": "즐거운 외출은 오래가지 않을 것 같은 불안과 함께 이어집니다. 이번 회차는 과거의 이상한 사건, 현재의 동물원 장면, 곧 일어날 변화를 연결하는 표현을 읽습니다.",
+  "scenes": [
+    {
+      "no": 1,
+      "title": "설명하기 어려운 지난 사건들",
+      "body": "해리는 학교와 집에서 겪은 이상한 일들을 떠올립니다. 본인도 원인을 알지 못하지만, 주변 사람들은 결과만 보고 그를 탓해 왔습니다."
+    },
+    {
+      "no": 2,
+      "title": "잠시 찾아온 즐거움",
+      "body": "동물원에서는 예상 밖의 간식과 구경거리가 생깁니다. 해리는 괴롭힘을 피하려고 거리를 둡니다. 뜻밖의 즐거움 뒤에는 곧 불안이 스며듭니다."
+    },
+    {
+      "no": 3,
+      "title": "유리 너머의 눈맞춤",
+      "body": "파충류관의 커다란 뱀이 잠에서 깨어 해리와 눈을 맞춥니다. 움직이지 않던 존재가 반응하기 시작하면서 장면의 분위기가 관찰에서 교감으로 바뀝니다."
+    }
+  ],
+  "one_sentence": {
+    "label": "오늘의 연습 문장",
+    "en": "They might fall back on an old habit when the good mood feels too good to last.",
+    "source": "리터스텔라 제작 연습 문장 · 원작 인용문 아님"
+  },
+  "one_line_translation": "좋은 분위기가 너무 좋아 오래가지 않을 듯하면, 그들은 예전 습관으로 돌아갈지도 모른다.",
+  "sentence_reading": [
+    "past perfect는 현재 장면보다 먼저 일어난 이상한 사건들을 정리할 때 시간 순서를 분명히 합니다.",
+    "연습 문장의 fall back on은 이 문맥에서 예전 습관이나 행동으로 다시 돌아가다는 뜻입니다. 일반적으로는 다른 수단에 의지한다는 뜻도 있습니다.",
+    "연습 문장의 too good to last는 좋은 상태가 오래 이어지지 않을 듯한 불안을 나타냅니다.",
+    "budge는 움직이지 않던 대상이 조금이라도 움직이는지를 강조할 때 쓰입니다.",
+    "실천: 현재 장면보다 먼저 일어난 사건 하나를 골라 past perfect를 사용한 영어 문장 한 개를 직접 만들어 보세요."
+  ],
+  "essay": [
+    "과거의 이상한 사건들은 해리가 의도적으로 문제를 만든 것이 아니라는 단서를 줍니다. 독자는 해리보다 조금 먼저 패턴을 알아차리지만, 정답은 아직 보류됩니다.",
+    "파충류관 장면은 움직임의 속도를 늦추며 시선을 한곳에 모읍니다. 잠, 눈맞춤, 작은 반응을 차례로 따라가면 곧 벌어질 사건의 긴장이 자연스럽게 커집니다."
+  ],
+  "vocab": [
+    { "word": "fall back on", "meaning": "이 문맥에서는 예전 습관으로 돌아가다; 일반적으로는 다른 수단에 의지하다" },
+    { "word": "too good to last", "meaning": "너무 좋아 오래가지 않을 듯한" },
+    { "word": "budge", "meaning": "조금 움직이다" }
+  ],
+  "teaser": {
+    "day": 10,
+    "text": "유리 너머의 눈맞춤은 실제 대화로 이어질 수 있을까요?"
+  },
+  "media": {
+    "free_reading_video": { "url": null, "desc": "[PLACEHOLDER] 출처·게시 권한 확인 후 연결" },
+    "hero_illust": { "url": null, "alt": "[PLACEHOLDER] 권리·시각 QA 후 입력" },
+    "essay_audio": { "url": null, "desc": "[PLACEHOLDER] 제작·권리 QA 전 미연결" },
+    "pdf": { "url": null, "desc": "[PLACEHOLDER] 제작·권리 QA 전 미연결" }
+  },
+  "_provenance": {
+    "authorship": "LiterStella instructor-created educational content.",
+    "quote_policy": "No verbatim novel passage copied into publishable fields.",
+    "review": "Editorial review required before release."
+  },
+  "_productionStatus": "EDITORIAL_REVIEW_REQUIRED",
+  "_releaseStatus": "RELEASE_QA_BLOCKED",
+  "_warnings": [
+    "RELEASE_QA_BLOCKED — editorial and release review required before publication."
+  ]
+}
+
