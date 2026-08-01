@@ -9,6 +9,7 @@
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
+import { classMemberTierAdminRoute } from "./class-member-tier-admin.mjs";
 
 // ── CORS ─────────────────────────────────────────────────
 function corsHeaders(req, env) {
@@ -1096,6 +1097,10 @@ export default {
     if (path === "/api/class/link-enrollment") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return classLinkEnrollment(req, env, cors);
+    }
+
+    if (path === "/api/class/admin-member-tier") {
+      return classMemberTierAdminRoute(req, env, cors, { json, requireUser, sbFetch });
     }
 
     // 본인인증(통합인증) 결과 조회 — PORTONE_API_SECRET 필요. 플래그 없이 열림(id=unguessable UUID).
