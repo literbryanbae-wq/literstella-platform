@@ -1,0 +1,90 @@
+{
+  "book": {
+    "id": "hp1",
+    "series_no": 1,
+    "title_en": "Harry Potter and the Sorcerer's Stone",
+    "title_ko": "해리포터와 마법사의 돌",
+    "author": "J.K. Rowling",
+    "year": 1997,
+    "total_days": 100,
+    "media_type": "live",
+    "brand_note": "HP 상표=유료 상품명 사용 금지. 본문0%·강의100%. 1권=5년 전 강독(품질 주의).",
+    "free_reading_playlist": "https://youtube.com/playlist?list=PLARsitvDhfaKdd7XctJriviiskDgGXHxI",
+    "club_url": "https://cafe.naver.com/literenglish/25286",
+    "workbook_url": "https://drive.google.com/file/d/1xNOPkGLXnOskmILbIZThoQbPwVztHXxU/view",
+    "class_5step_url": "https://class.literstella.co.kr/p/new-5",
+    "cafe_url": "https://cafe.naver.com/literenglish"
+  },
+  "day": 7,
+  "pages": "p.19-21",
+  "season": "Spring 2026",
+  "chapter": {
+    "no": "I/II?",
+    "title_en": "Chapter assignment pending edition review",
+    "title_ko": "1장/2장 귀속 편집 확인 필요",
+    "editorial_status": "BOUNDARY_UNCONFIRMED",
+    "evidence": "Source materials conflict on chapter assignment. Edition page boundary has not been independently verified."
+  },
+  "intro": "한 집 안에 사는 두 아이의 아침은 전혀 다릅니다. 이번 회차는 명령과 묘사, 소유물의 대비가 인물 사이의 권력관계를 어떻게 보여 주는지 읽습니다.",
+  "scenes": [
+    {
+      "no": 1,
+      "title": "날카로운 노크",
+      "body": "해리는 계단 밑 작은 공간에서 잠을 깨고 곧바로 아침 준비를 맡습니다. 짧고 거친 명령은 이 집에서 그가 어떤 위치에 있는지를 드러냅니다."
+    },
+    {
+      "no": 2,
+      "title": "서로 다른 방과 물건",
+      "body": "해리의 잠자리와 더들리의 선물로 가득한 식탁이 대비됩니다. 사물의 수와 공간의 크기가 두 아이가 받는 대우의 차이를 대신 설명합니다."
+    },
+    {
+      "no": 3,
+      "title": "외모가 들려주는 생활",
+      "body": "낡고 큰 옷, 수선된 안경, 마른 체격 같은 세부 묘사는 해리의 지난 생활을 압축합니다. 묘사는 장식이 아니라 배경 정보가 됩니다."
+    }
+  ],
+  "one_sentence": {
+    "label": "오늘의 연습 문장",
+    "en": "I am used to looking after small details, not to mention sudden changes.",
+    "source": "리터스텔라 제작 연습 문장 · 원작 인용문 아님"
+  },
+  "one_line_translation": "나는 작은 세부를 살피는 일은 물론 갑작스러운 변화에도 익숙하다.",
+  "sentence_reading": [
+    "연습 문장의 look after는 작은 세부를 주의 깊게 살핀다는 뜻입니다. 강독에서는 음식이나 사람을 돌보는 문맥에도 쓰입니다.",
+    "don't you dare는 강한 금지와 위협의 태도를 담으므로 말하는 사람과 듣는 사람의 관계를 함께 읽어야 합니다.",
+    "연습 문장의 be used to 뒤에는 익숙해진 행동을 나타내는 동명사 looking이 이어집니다.",
+    "연습 문장의 not to mention은 이미 말한 정보에 sudden changes를 한 가지 더 보탭니다.",
+    "실천: 해리와 더들리의 공간·옷·물건을 두 칸 표로 나누어 각각 두 가지씩 적어 보세요."
+  ],
+  "essay": [
+    "작가는 긴 해설 대신 집 안의 배치와 사물로 차별을 보여 줍니다. 사진, 선물, 잠자리와 옷을 차례로 보면 누가 중심이고 누가 지워져 있는지 알 수 있습니다.",
+    "인물 묘사를 읽을 때 형용사만 표시하지 말고 그 특징이 생긴 이유도 추론해 보세요. 텍스트가 직접 알려 준 사실과 독자가 해석한 의미를 구분하면 더 정확한 독해가 됩니다."
+  ],
+  "vocab": [
+    { "word": "look after", "meaning": "돌보다, 주의해서 살피다" },
+    { "word": "be used to", "meaning": "~에 익숙하다" },
+    { "word": "not to mention", "meaning": "~은 말할 것도 없이" }
+  ],
+  "teaser": {
+    "day": 8,
+    "text": "예정에 없던 동행이 생기자 가족의 속마음은 어떻게 드러날까요?"
+  },
+  "media": {
+    "free_reading_video": { "url": null, "desc": "[PLACEHOLDER] 출처·게시 권한 확인 후 연결" },
+    "hero_illust": { "url": null, "alt": "[PLACEHOLDER] 권리·시각 QA 후 입력" },
+    "essay_audio": { "url": null, "desc": "[PLACEHOLDER] 제작·권리 QA 전 미연결" },
+    "pdf": { "url": null, "desc": "[PLACEHOLDER] 제작·권리 QA 전 미연결" }
+  },
+  "_provenance": {
+    "authorship": "LiterStella instructor-created educational content.",
+    "quote_policy": "No verbatim novel passage copied into publishable fields.",
+    "review": "Editorial review required before release."
+  },
+  "_productionStatus": "EDITORIAL_REVIEW_REQUIRED",
+  "_releaseStatus": "RELEASE_QA_BLOCKED",
+  "_warnings": [
+    "RELEASE_QA_BLOCKED — editorial and release review required before publication.",
+    "CHAPTER_BOUNDARY_UNCONFIRMED — chapter assignment requires edition review before release."
+  ]
+}
+
