@@ -1,0 +1,87 @@
+{
+  "book": {
+    "id": "hp1",
+    "series_no": 1,
+    "title_en": "Harry Potter and the Sorcerer's Stone",
+    "title_ko": "해리포터와 마법사의 돌",
+    "author": "J.K. Rowling",
+    "year": 1997,
+    "total_days": 100,
+    "media_type": "live",
+    "brand_note": "HP 상표=유료 상품명 사용 금지. 본문0%·강의100%. 1권=5년 전 강독(품질 주의).",
+    "free_reading_playlist": "https://youtube.com/playlist?list=PLARsitvDhfaKdd7XctJriviiskDgGXHxI",
+    "club_url": "https://cafe.naver.com/literenglish/25286",
+    "workbook_url": "https://drive.google.com/file/d/1xNOPkGLXnOskmILbIZThoQbPwVztHXxU/view",
+    "class_5step_url": "https://class.literstella.co.kr/p/new-5",
+    "cafe_url": "https://cafe.naver.com/literenglish"
+  },
+  "day": 8,
+  "pages": "p.22-24",
+  "season": "Spring 2026",
+  "chapter": {
+    "no": "II",
+    "title_en": "The Vanishing Glass",
+    "title_ko": "뜻밖의 동물원 동행"
+  },
+  "intro": "돌봄 계획이 갑자기 바뀌면서 해리는 뜻밖에 동물원에 가게 됩니다. 이번 회차는 인물들이 문제를 해결하는 방식과 말하지 않은 속내를 행동으로 읽습니다.",
+  "scenes": [
+    {
+      "no": 1,
+      "title": "바뀐 돌봄 계획",
+      "body": "평소 해리를 맡던 이웃에게 사고가 생기자 가족은 대안을 찾습니다. 해리가 같은 자리에 있어도 어른들은 그를 문제처럼 의논합니다."
+    },
+    {
+      "no": 2,
+      "title": "가짜 울음과 빠른 계산",
+      "body": "더들리는 해리와 함께 가기 싫다는 뜻을 과장된 행동으로 표현합니다. 친구가 도착하자 그 행동은 곧 멈추고, 독자는 진짜 감정과 연기를 구분하게 됩니다."
+    },
+    {
+      "no": 3,
+      "title": "조건이 붙은 외출",
+      "body": "결국 해리도 동물원에 가지만, 출발 전에 엄한 경고를 받습니다. 즐거운 외출조차 해리에게는 행동을 감시받는 상황으로 시작됩니다."
+    }
+  ],
+  "one_sentence": {
+    "label": "오늘의 연습 문장",
+    "en": "For a change, he gave a few pretend sobs, as though he were truly upset.",
+    "source": "리터스텔라 제작 연습 문장 · 원작 인용문 아님"
+  },
+  "one_line_translation": "그는 평소와 달리 정말 속상한 것처럼 꾸며 낸 울음을 몇 번 보였다.",
+  "sentence_reading": [
+    "연습 문장의 for a change는 평소와 다른 예외적 상황을 강조합니다.",
+    "연습 문장의 as though는 겉으로 보이는 모습과 실제 상태를 비교합니다.",
+    "pretend는 여기서 sobs를 꾸미는 형용사로, 실제 울음이 아니라 꾸며 낸 울음이라는 뜻입니다. 동사로 쓰이면 '~인 척하다'라는 별도 용법이 됩니다.",
+    "take someone aside는 다른 사람들과 떨어진 곳에서 따로 말하는 장면을 만듭니다.",
+    "실천: 오늘 장면에서 말과 행동이 어긋나는 인물을 골라, 겉으로 보인 행동과 실제 목적을 각각 한 줄로 적어 보세요."
+  ],
+  "essay": [
+    "계획이 틀어지는 순간에는 가족의 우선순위가 선명해집니다. 누가 보호받고 누가 부담으로 취급되는지, 해결책을 찾는 대화의 방향이 보여 줍니다.",
+    "더들리의 반응은 대사의 내용보다 행동의 시작과 끝이 중요합니다. 독자는 행동이 멈추는 순간을 통해 그 감정이 얼마나 진실한지 판단할 수 있습니다."
+  ],
+  "vocab": [
+    { "word": "for a change", "meaning": "평소와 달리, 이번에는" },
+    { "word": "pretend (adj.)", "meaning": "가짜의, 꾸며 낸" },
+    { "word": "take aside", "meaning": "따로 불러 이야기하다" }
+  ],
+  "teaser": {
+    "day": 9,
+    "text": "평범해 보이던 동물원에서 무엇이 먼저 해리에게 반응할까요?"
+  },
+  "media": {
+    "free_reading_video": { "url": null, "desc": "[PLACEHOLDER] 출처·게시 권한 확인 후 연결" },
+    "hero_illust": { "url": null, "alt": "[PLACEHOLDER] 권리·시각 QA 후 입력" },
+    "essay_audio": { "url": null, "desc": "[PLACEHOLDER] 제작·권리 QA 전 미연결" },
+    "pdf": { "url": null, "desc": "[PLACEHOLDER] 제작·권리 QA 전 미연결" }
+  },
+  "_provenance": {
+    "authorship": "LiterStella instructor-created educational content.",
+    "quote_policy": "No verbatim novel passage copied into publishable fields.",
+    "review": "Editorial review required before release."
+  },
+  "_productionStatus": "EDITORIAL_REVIEW_REQUIRED",
+  "_releaseStatus": "RELEASE_QA_BLOCKED",
+  "_warnings": [
+    "RELEASE_QA_BLOCKED — editorial and release review required before publication."
+  ]
+}
+
