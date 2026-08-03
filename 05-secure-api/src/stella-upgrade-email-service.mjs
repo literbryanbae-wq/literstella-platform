@@ -2,6 +2,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COUPON_RE = /^[A-Z0-9][A-Z0-9_-]{2,63}$/;
 const LIVEKLASS_PACKAGE_URL = "https://class.literstella.co.kr/packages/312328";
+const CLASS_ROOM_URL = "https://class-new.literstella.co.kr/room";
+// 계좌 정보는 클래스 앱 data/stellaUpgrade.js STELLA_BANK와 같은 값이어야 한다(한쪽만 바뀌면 오입금).
+const BANK = { bank: "농협", account: "302-2142-9005-61", holder: "배선원(리터스텔라)" };
 
 const COURSE_NAMES = {
   kidari: "키다리 아저씨",
@@ -62,37 +65,48 @@ async function readRequest(req) {
   }
 }
 
-function requestSelect() {
-  return [
-    "id",
-    "user_id",
-    "email",
-    "liveklass_id",
-    "owned_books",
-    "missing_books",
-    "owned_count",
-    "base_amount",
-    "coupon_amount",
-    "payable_amount",
-    "payment_method",
-    "cash_receipt_number",
-    "status",
-    "coupon_code",
-    "admin_notified_at",
-    "coupon_emailed_at",
-    "coupon_email_recipient_count",
-  ].join(",");
+const BASE_COLUMNS = [
+  "id",
+  "user_id",
+  "email",
+  "liveklass_id",
+  "owned_books",
+  "missing_books",
+  "owned_count",
+  "base_amount",
+  "coupon_amount",
+  "payable_amount",
+  "payment_method",
+  "cash_receipt_number",
+  "status",
+  "coupon_code",
+  "admin_notified_at",
+  "coupon_emailed_at",
+  "coupon_email_recipient_count",
+];
+// 입금 안내 메일용 신규 컬럼. 마이그레이션 전에는 이 컬럼이 없어 select가 400을 낸다.
+// 없으면 기본 컬럼만으로 한 번 더 읽는다 — 배포 순서(SQL 먼저/나중)에 관계없이
+// 관리자 알림이 죽지 않게 하려는 것. 컬럼이 생기면 자동으로 안내 메일까지 살아난다.
+const DEPOSIT_COLUMNS = ["depositor_name", "bank_guide_emailed_at"];
+
+async function selectRequest(env, sbFetch, requestId, userId, columns) {
+  const ownerFilter = userId ? `&user_id=eq.${encodeURIComponent(userId)}` : "";
+  return sbFetch(
+    env,
+    `stella_upgrade_requests?id=eq.${encodeURIComponent(requestId)}${ownerFilter}&select=${columns.join(",")}&limit=1`,
+  );
 }
 
 async function fetchRequest(env, sbFetch, requestId, userId) {
-  const ownerFilter = userId ? `&user_id=eq.${encodeURIComponent(userId)}` : "";
-  const response = await sbFetch(
-    env,
-    `stella_upgrade_requests?id=eq.${encodeURIComponent(requestId)}${ownerFilter}&select=${requestSelect()}&limit=1`,
-  );
+  let depositReady = true;
+  let response = await selectRequest(env, sbFetch, requestId, userId, [...BASE_COLUMNS, ...DEPOSIT_COLUMNS]);
+  if (response.status === 400) {
+    depositReady = false;
+    response = await selectRequest(env, sbFetch, requestId, userId, BASE_COLUMNS);
+  }
   if (!response.ok) return { error: response.status === 400 ? "schema_pending" : "db_read_failed" };
   const rows = await readJson(response);
-  return { row: Array.isArray(rows) ? rows[0] : null };
+  return { row: Array.isArray(rows) ? rows[0] : null, depositReady };
 }
 
 async function patchRequest(env, sbFetch, requestId, patch) {
@@ -133,6 +147,46 @@ function adminRequestEmail(row, brandEmailHtml) {
   return brandEmailHtml(body);
 }
 
+// 계좌이체 신청자에게 나가는 입금 안내 메일.
+//   왜 필요한가: 카드 신청자는 쿠폰 메일로 '금액 + 결제 버튼'을 받는데, 계좌이체 신청자는
+//   신청 후 아무것도 받지 못했다. 화면을 닫는 순간 계좌도 금액도 사라져 입금이 그대로 샜다.
+//   따라서 이 메일은 재촉이 아니라 '신청 확인서'다 — 망설이는 지점(얼마·어디로·누구 이름으로·
+//   보내면 어떻게 되나)을 순서대로 답해 주면 입금은 그 다음 동작으로 자연스럽게 이어진다.
+function bankGuideEmail(row, brandEmailHtml) {
+  const amount = won(row.payable_amount);
+  const line = (key, value) => `<tr><td style="padding:6px 0;color:#8a8270;white-space:nowrap;">${escapeHtml(key)}</td><td style="padding:6px 0;text-align:right;font-weight:800;color:#2b2519;">${escapeHtml(value)}</td></tr>`;
+  const body = `
+    <div style="font-size:18px;font-weight:800;margin-bottom:8px;">신청이 접수됐습니다</div>
+    <p style="margin:0 0 16px;color:#5a5446;line-height:1.7;">아래 금액을 입금해 주시면 확인 후 미소장 클래스를 한 번에 열어 드립니다. 이 메일을 그대로 보관하셔도 됩니다.</p>
+    <div style="padding:18px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;text-align:center;">
+      <div style="font-size:12px;color:#8a8270;">입금하실 금액</div>
+      <div style="margin-top:6px;font-size:28px;font-weight:900;color:#8b691c;">${escapeHtml(amount)}</div>
+    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px;font-size:14px;line-height:1.7;">
+      ${line("입금 계좌", `${BANK.bank} ${BANK.account}`)}
+      ${line("예금주", BANK.holder)}
+      ${row.depositor_name ? line("입금자명", row.depositor_name) : ""}
+      ${row.cash_receipt_number ? line("현금영수증", row.cash_receipt_number) : ""}
+    </table>
+    <div style="margin-top:18px;padding:14px;background:#faf7ef;border-radius:10px;font-size:13.5px;line-height:1.75;color:#5a5446;">
+      <div style="font-weight:800;color:#2b2519;margin-bottom:6px;">입금하시면 이렇게 진행됩니다</div>
+      <div>1. 평일 기준 1일 이내에 입금을 확인합니다.</div>
+      <div>2. 아래 수업이 지금 쓰시는 계정에 한 번에 연결됩니다.</div>
+      <div>3. 연결이 끝나면 다시 메일로 알려 드립니다.</div>
+    </div>
+    <div style="margin-top:14px;padding:13px;background:#faf7ef;border-radius:10px;font-size:13.5px;line-height:1.7;">
+      <strong>연결될 수업</strong> · ${escapeHtml(courseNames(row.missing_books) || "없음")}
+    </div>
+    <div style="margin-top:20px;text-align:center;">
+      <a href="${CLASS_ROOM_URL}" style="display:inline-block;background:#c8a84b;color:#20160a;font-weight:800;text-decoration:none;padding:13px 24px;border-radius:10px;">신청 내역 확인하기</a>
+    </div>
+    <p style="margin:16px 0 0;font-size:12px;color:#8a8270;line-height:1.7;">
+      ${row.depositor_name ? `통장에는 <strong>${escapeHtml(row.depositor_name)}</strong> 이름으로 찍히도록 보내주시면 바로 확인됩니다. 다른 이름으로 보내셨다면 이 메일에 답장해 알려 주세요.` : "다른 이름으로 입금하셨다면 이 메일에 답장해 알려 주세요."}
+      <br />금액이 맞지 않거나 입금을 취소하고 싶으시면 답장 주시면 됩니다.
+    </p>`;
+  return brandEmailHtml(body);
+}
+
 function couponEmail(row, couponCode, brandEmailHtml) {
   const body = `
     <div style="font-size:18px;font-weight:800;margin-bottom:8px;">스텔라 등급 할인 쿠폰이 도착했습니다</div>
@@ -164,9 +218,37 @@ async function notifyAdmin(req, env, cors, deps) {
   const requestId = String(body?.requestId || "").trim();
   if (!UUID_RE.test(requestId)) return json({ ok: false, error: "bad_request_id" }, 400, cors);
 
-  const found = await fetchRequest(env, sbFetch, requestId, user.id);
+  let found = await fetchRequest(env, sbFetch, requestId, user.id);
   if (found.error) return json({ ok: false, error: found.error }, 503, cors);
   if (!found.row) return json({ ok: false, error: "not_found" }, 404, cors);
+
+  // 입금자명은 신청(RPC) 뒤에 들어오므로 여기서 행에 기록한다. 이미 알림을 보낸 신청이라도
+  // 이름이 새로 들어오면 반영해야 통장 대조가 된다 → 아래 '이미 보냄' 조기 반환보다 먼저 처리.
+  const depositorName = String(body?.depositorName || "").trim().slice(0, 40);
+  if (found.depositReady && depositorName && depositorName !== found.row.depositor_name) {
+    await patchRequest(env, sbFetch, requestId, { depositor_name: depositorName });
+    found = { ...found, row: { ...found.row, depositor_name: depositorName } };
+  }
+
+  // 계좌이체 신청자에게 입금 안내 메일 — 신청당 1회(bank_guide_emailed_at). 관리자 알림과 독립적으로
+  // 판단한다: 관리자 메일이 이미 나갔더라도 안내 메일이 안 나갔으면 여기서 보낸다.
+  if (found.depositReady && found.row.payment_method === "bank_transfer" && !found.row.bank_guide_emailed_at) {
+    // 수신자 = 신청한 class-new 계정 우선(로그인해서 신청한 그 주소). 없으면 라이브클래스 주소.
+    const applicant = recipientEmails(found.row);
+    const to = [String(found.row.email || "").trim().toLowerCase(), ...applicant].find((mail) => applicant.includes(mail));
+    if (to) {
+      const guideSent = await sendEmail(env, {
+        to,
+        subject: `[리터스텔라] 입금 안내 · ${won(found.row.payable_amount)}`,
+        html: bankGuideEmail(found.row, brandEmailHtml),
+        idempotencyKey: `stella-bank-guide/${requestId}`,
+      });
+      if (guideSent) {
+        await patchRequest(env, sbFetch, requestId, { bank_guide_emailed_at: new Date().toISOString() });
+      }
+    }
+  }
+
   if (found.row.admin_notified_at) return json({ ok: true, alreadySent: true }, 200, cors);
 
   const subject = `[리터스텔라] 스텔라 등급 신청 · ${won(found.row.payable_amount)}`;
