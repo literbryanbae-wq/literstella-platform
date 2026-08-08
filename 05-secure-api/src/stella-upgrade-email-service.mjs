@@ -83,7 +83,12 @@ const BASE_COLUMNS = [
   "admin_notified_at",
   "coupon_emailed_at",
   "coupon_email_recipient_count",
+  "completion_emailed_at",
+  "created_at",
+  "processed_at",
 ];
+// 확정 시 자동 연결되는 8권 — private.stella_upgrade RPC의 v_all과 같은 목록이어야 한다.
+const ALL_BOOKS = ["kidari", "anne", "littlewomen1", "littlewomen2", "pride", "gatsby", "sherlock", "theory"];
 // 입금 안내 메일용 신규 컬럼. 마이그레이션 전에는 이 컬럼이 없어 select가 400을 낸다.
 // 없으면 기본 컬럼만으로 한 번 더 읽는다 — 배포 순서(SQL 먼저/나중)에 관계없이
 // 관리자 알림이 죽지 않게 하려는 것. 컬럼이 생기면 자동으로 안내 메일까지 살아난다.
@@ -249,6 +254,23 @@ async function notifyAdmin(req, env, cors, deps) {
     }
   }
 
+  // 카드 신청 = 쿠폰 즉시 자동 발급(운영자 확정 2026-08-04 — "왜 자동이 아니냐" → 관리자 버튼 대기 제거).
+  //   풀에서 할인 금액에 맞는 코드를 원자 배정 → 쿠폰 메일 → 상태 coupon_issued. 실패해도 신청 흐름은 비차단
+  //   (관리자 탭 [쿠폰 자동발급·메일] 버튼이 백업 경로로 그대로 남는다 — 풀 소진 등).
+  if (found.row.payment_method === "liveklass_card"
+    && Number(found.row.coupon_amount) > 0
+    && !found.row.coupon_code
+    && found.row.status === "pending") {
+    const claimed = await claimPoolCoupon(env, sbFetch, requestId, found.row.coupon_amount);
+    if (!claimed.error) {
+      const issued = await deliverCouponCore(env, deps, found.row, requestId, claimed.code);
+      console.log(JSON.stringify({ evt: "stella_coupon_auto_issue", requestId, ok: issued.ok, code: claimed.code, error: issued.error || null }));
+      if (issued.ok) found = { ...found, row: { ...found.row, coupon_code: claimed.code, status: "coupon_issued" } };
+    } else {
+      console.log(JSON.stringify({ evt: "stella_coupon_pool_issue_fail", requestId, reason: claimed.error }));
+    }
+  }
+
   if (found.row.admin_notified_at) return json({ ok: true, alreadySent: true }, 200, cors);
 
   const subject = `[리터스텔라] 스텔라 등급 신청 · ${won(found.row.payable_amount)}`;
@@ -299,17 +321,23 @@ async function issueCoupon(req, env, cors, deps) {
     }, 409, cors);
   }
 
+  return deliverCoupon(env, cors, deps, row, requestId, couponCode);
+}
+
+// 쿠폰 잠금 → 메일 발송 → 감사 기록 — 수동(coupon)·자동(coupon-auto)·신청 즉시(request-notify) 공용 코어.
+async function deliverCouponCore(env, deps, row, requestId, couponCode) {
+  const { sbFetch, sendEmail, brandEmailHtml } = deps;
   const recipients = recipientEmails(row);
-  if (!recipients.length) return json({ ok: false, error: "recipient_missing" }, 409, cors);
+  if (!recipients.length) return { ok: false, error: "recipient_missing", httpStatus: 409 };
   if (row.coupon_code === couponCode && row.coupon_emailed_at) {
-    return json({ ok: true, alreadySent: true, recipientCount: recipients.length }, 200, cors);
+    return { ok: true, alreadySent: true, couponCode, recipientCount: recipients.length };
   }
   if (!row.coupon_code) {
     const locked = await patchRequest(env, sbFetch, requestId, {
       coupon_code: couponCode,
       updated_at: new Date().toISOString(),
     });
-    if (!locked) return json({ ok: false, error: "coupon_lock_failed" }, 502, cors);
+    if (!locked) return { ok: false, error: "coupon_lock_failed", httpStatus: 502 };
   }
 
   let sentCount = 0;
@@ -323,12 +351,7 @@ async function issueCoupon(req, env, cors, deps) {
     if (sent) sentCount += 1;
   }
   if (sentCount !== recipients.length) {
-    return json({
-      ok: false,
-      error: "email_send_failed",
-      sentCount,
-      recipientCount: recipients.length,
-    }, 502, cors);
+    return { ok: false, error: "email_send_failed", sentCount, recipientCount: recipients.length, httpStatus: 502 };
   }
 
   const saved = await patchRequest(env, sbFetch, requestId, {
@@ -339,18 +362,187 @@ async function issueCoupon(req, env, cors, deps) {
     admin_note: `쿠폰 ${couponCode} · 이메일 ${recipients.length}개 발송`,
     updated_at: new Date().toISOString(),
   });
-  if (!saved) return json({ ok: false, error: "coupon_audit_failed" }, 502, cors);
+  if (!saved) return { ok: false, error: "coupon_audit_failed", httpStatus: 502 };
 
-  return json({
-    ok: true,
-    couponCode,
-    recipientCount: recipients.length,
-  }, 200, cors);
+  return { ok: true, couponCode, recipientCount: recipients.length };
+}
+
+async function deliverCoupon(env, cors, deps, row, requestId, couponCode) {
+  const { json } = deps;
+  const r = await deliverCouponCore(env, deps, row, requestId, couponCode);
+  const { httpStatus, ...body } = r;
+  return json(body, r.ok ? 200 : (httpStatus || 502), cors);
+}
+
+async function requireAdminUser(req, env, deps, cors) {
+  const admin = await deps.requireUser(req, env);
+  const adminEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (!admin || !adminEmail || admin.email !== adminEmail) return null;
+  return admin;
+}
+
+// 쿠폰 풀에서 신청 할인 금액에 맞는 미배정 코드를 원자적으로 집는다(운영자 확정 2026-08-03 — 수동 코드 입력 제거).
+//   경쟁은 request_id IS NULL 필터가 잡는다: 같은 코드를 두 요청이 집으면 한쪽 PATCH만 행을 반환.
+async function claimPoolCoupon(env, sbFetch, requestId, amount) {
+  const listed = await sbFetch(env, `stella_coupons?request_id=is.null&amount=eq.${Number(amount)}&select=code&order=code.asc&limit=5`);
+  if (!listed.ok) return { error: "pool_read_failed" };
+  const candidates = (await readJson(listed)) || [];
+  if (!candidates.length) return { error: "pool_empty" };
+  for (const cand of candidates) {
+    const res = await sbFetch(env, `stella_coupons?code=eq.${encodeURIComponent(cand.code)}&request_id=is.null`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ request_id: requestId, assigned_at: new Date().toISOString() }),
+    });
+    if (!res.ok) continue;
+    const rows = await readJson(res);
+    if (Array.isArray(rows) && rows.length === 1) return { code: rows[0].code };
+  }
+  return { error: "pool_race_lost" };
+}
+
+// 자동 발급: 신청의 할인 금액에 맞는 쿠폰을 풀에서 집어 잠그고 메일까지 — 관리자 버튼 1회.
+async function issueCouponAuto(req, env, cors, deps) {
+  const { json, sbFetch } = deps;
+  const admin = await requireAdminUser(req, env, deps, cors);
+  if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
+
+  const body = await readRequest(req);
+  const requestId = String(body?.requestId || "").trim();
+  if (!UUID_RE.test(requestId)) return json({ ok: false, error: "bad_request_id" }, 400, cors);
+
+  const found = await fetchRequest(env, sbFetch, requestId);
+  if (found.error) return json({ ok: false, error: found.error }, 503, cors);
+  const row = found.row;
+  if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
+  if (row.payment_method !== "liveklass_card") return json({ ok: false, error: "card_request_required" }, 409, cors);
+  if (!["pending", "coupon_issued"].includes(row.status)) return json({ ok: false, error: "request_not_actionable" }, 409, cors);
+  if (!Number(row.coupon_amount)) return json({ ok: false, error: "no_discount_no_coupon" }, 409, cors);
+
+  // 이미 코드가 잠겨 있으면(재발송) 풀을 다시 집지 않고 그 코드로 재발송한다.
+  let couponCode = row.coupon_code || null;
+  if (!couponCode) {
+    const claimed = await claimPoolCoupon(env, sbFetch, requestId, row.coupon_amount);
+    if (claimed.error) return json({ ok: false, error: claimed.error }, claimed.error === "pool_empty" ? 409 : 502, cors);
+    couponCode = claimed.code;
+  }
+  return deliverCoupon(env, cors, deps, row, requestId, couponCode);
+}
+
+// 평생소장 확정 메일 — 입금/결제 확인 후 8권 연결이 끝났음을 알리는 최종 안내.
+function completionEmail(row, brandEmailHtml) {
+  const body = `
+    <div style="font-size:18px;font-weight:800;margin-bottom:8px;">평생소장 연결이 완료됐습니다 🎉</div>
+    <p style="margin:0 0 14px;color:#5a5446;line-height:1.75;">결제 확인이 끝나 스텔라 등급의 모든 수업이 지금 쓰시는 계정에 연결됐습니다. 이제 언제든, 평생 이어서 들으실 수 있어요.</p>
+    <div style="padding:16px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;">
+      <div style="font-size:12px;color:#8a8270;margin-bottom:6px;">연결된 수업 · 8개 전부</div>
+      <div style="font-size:14px;line-height:1.8;color:#2b2519;font-weight:700;">${escapeHtml(courseNames(ALL_BOOKS))}</div>
+    </div>
+    <div style="margin-top:14px;padding:13px;background:#faf7ef;border-radius:10px;font-size:13.5px;line-height:1.75;color:#5a5446;">
+      <div style="font-weight:800;color:#2b2519;margin-bottom:4px;">스텔라 클럽</div>
+      강독 7개를 모두 소장하셔서 내 서재에 <strong>스텔라 클럽</strong> 등급이 함께 표시됩니다. 리딩메이트 Lyra도 다음 방문 때 인사드릴 거예요.
+    </div>
+    <div style="margin-top:20px;text-align:center;">
+      <a href="${CLASS_ROOM_URL}" style="display:inline-block;background:#c8a84b;color:#20160a;font-weight:800;text-decoration:none;padding:13px 24px;border-radius:10px;">내 강의실에서 시작하기</a>
+    </div>
+    <p style="margin:16px 0 0;font-size:12px;color:#8a8270;">로그인 이메일: ${escapeHtml(row.email)} · 궁금한 점은 이 메일에 답장 주세요.</p>`;
+  return brandEmailHtml(body);
+}
+
+// 확정: 결제/입금 확인 → 8권 수강권 연결 → 완료 메일 — 관리자 버튼 1회(운영자 확정 2026-08-03).
+//   Lyra 인앱 알림은 클라가 담당(연결 감지 → GrantWelcomeModal + Lyra 인박스) — '이메일 알림 = 라일라 알림' 규칙.
+async function completeRequest(req, env, cors, deps) {
+  const { json, sbFetch, sendEmail, brandEmailHtml } = deps;
+  const admin = await requireAdminUser(req, env, deps, cors);
+  if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
+
+  const body = await readRequest(req);
+  const requestId = String(body?.requestId || "").trim();
+  if (!UUID_RE.test(requestId)) return json({ ok: false, error: "bad_request_id" }, 400, cors);
+
+  const found = await fetchRequest(env, sbFetch, requestId);
+  if (found.error) return json({ ok: false, error: found.error }, 503, cors);
+  const row = found.row;
+  if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
+  if (!["pending", "coupon_issued", "completed"].includes(row.status)) {
+    return json({ ok: false, error: "request_not_actionable" }, 409, cors);
+  }
+  if (row.status === "completed" && row.completion_emailed_at) {
+    return json({ ok: true, alreadyDone: true }, 200, cors);
+  }
+  const applicant = String(row.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(applicant)) return json({ ok: false, error: "recipient_missing" }, 409, cors);
+
+  // 1) 8권 수강권 연결 — 이미 있는 책은 중복 삽입 무시(재실행 안전)
+  const nowIso = new Date().toISOString();
+  const grantRows = ALL_BOOKS.map((book) => ({
+    email: applicant,
+    book_code: book,
+    verified_at: nowIso,
+    enrollment_email: String(row.liveklass_id || applicant).trim().toLowerCase(),
+  }));
+  const granted = await sbFetch(env, `class_verifications?on_conflict=email,book_code`, {
+    method: "POST",
+    headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify(grantRows),
+  });
+  if (!granted.ok) return json({ ok: false, error: "grant_failed" }, 502, cors);
+
+  // 2) 상태 확정 — 메일이 실패해도 연결·상태는 남긴다(재실행 시 메일만 다시 시도)
+  const statusSaved = await patchRequest(env, sbFetch, requestId, {
+    status: "completed",
+    processed_at: row.processed_at || nowIso,
+    updated_at: nowIso,
+  });
+  if (!statusSaved) return json({ ok: false, error: "status_save_failed" }, 502, cors);
+
+  // 3) 완료 메일 — 로그인 계정 주소로 1통(라이브클래스 주소가 달라도 실제 접속 계정이 기준)
+  const sent = await sendEmail(env, {
+    to: applicant,
+    subject: "[리터스텔라] 평생소장 연결 완료 — 스텔라 등급",
+    html: completionEmail(row, brandEmailHtml),
+    idempotencyKey: `stella-complete/${requestId}`,
+  });
+  if (!sent) return json({ ok: false, error: "email_send_failed", grantDone: true }, 502, cors);
+  await patchRequest(env, sbFetch, requestId, { completion_emailed_at: new Date().toISOString() });
+
+  return json({ ok: true, granted: ALL_BOOKS.length, emailedTo: applicant }, 200, cors);
+}
+
+// 관리자 개요: 신청 전건 + 쿠폰 풀 잔량 — 관리자 탭 '스텔라 등급'이 읽는다(통계 합산은 클라 계산).
+async function adminOverview(req, env, cors, deps) {
+  const { json, sbFetch } = deps;
+  const admin = await requireAdminUser(req, env, deps, cors);
+  if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
+
+  const [reqRes, poolRes] = await Promise.all([
+    sbFetch(env, `stella_upgrade_requests?select=${[...BASE_COLUMNS, ...DEPOSIT_COLUMNS].join(",")}&order=created_at.desc&limit=200`),
+    sbFetch(env, `stella_coupons?select=amount,request_id`),
+  ]);
+  if (!reqRes.ok) {
+    // depositor 컬럼 미적용 환경 폴백(기존 fetchRequest와 같은 이유)
+    const fallback = await sbFetch(env, `stella_upgrade_requests?select=${BASE_COLUMNS.join(",")}&order=created_at.desc&limit=200`);
+    if (!fallback.ok) return json({ ok: false, error: "db_read_failed" }, 503, cors);
+    const rows = (await readJson(fallback)) || [];
+    return json({ ok: true, requests: rows, pool: [] }, 200, cors);
+  }
+  const rows = (await readJson(reqRes)) || [];
+  const poolRows = poolRes.ok ? ((await readJson(poolRes)) || []) : [];
+  const pool = {};
+  for (const c of poolRows) {
+    const key = String(c.amount);
+    if (!pool[key]) pool[key] = { free: 0, used: 0 };
+    if (c.request_id) pool[key].used += 1; else pool[key].free += 1;
+  }
+  return json({ ok: true, requests: rows, pool }, 200, cors);
 }
 
 export async function stellaUpgradeEmailRoute(req, env, cors, sub, deps) {
   if (req.method !== "POST") return deps.json({ ok: false, error: "method" }, 405, cors);
   if (sub === "request-notify") return notifyAdmin(req, env, cors, deps);
   if (sub === "coupon") return issueCoupon(req, env, cors, deps);
+  if (sub === "coupon-auto") return issueCouponAuto(req, env, cors, deps);
+  if (sub === "complete") return completeRequest(req, env, cors, deps);
+  if (sub === "admin-overview") return adminOverview(req, env, cors, deps);
   return deps.json({ ok: false, error: "not_found" }, 404, cors);
 }

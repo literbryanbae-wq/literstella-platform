@@ -15,6 +15,7 @@
     // OTP·알림 메일 발신자 — Resend 인증한 @literstella.co.kr 도메인이라 임의 수신자에게 도달.
     // (미설정 시 코드 폴백 onboarding@resend.dev = 본인 메일만). local-part는 원하면 변경 가능.
     "RESEND_FROM": "리터스텔라 <noreply@literstella.co.kr>",
+    "RESEND_STELLA_OPTIN_SEGMENT_ID": "c0cfb2fe-eaf9-47b7-9cf2-c5122192da1a",
     // 포트원 공개값(비밀 아님 — 프론트에도 노출되는 값)
     "PORTONE_STORE_ID": "store-464ff242-c317-4693-96c2-1052658e14b7",
     "PORTONE_BILLING_CHANNEL_KEY": "channel-key-3917d309-e69b-44b6-a0d5-2c7e3b727165",
@@ -32,8 +33,9 @@
   //   RESEND_API_KEY             — 회원가입 OTP·문의 메일 발송(diag Worker 키 재사용 가능) ★회원가입 필수
   //   RESEND_FROM (선택, var/secret) — 발신자. 미설정 시 onboarding@resend.dev(무료=본인메일만). 도메인 인증 후 인증@literstella.co.kr
 
-  // 자동갱신 Cron (PAYMENT_ENABLED + 빌링키 도입 후 주석 해제):
-  // "triggers": { "crons": ["0 0 * * *"] },
+  // 2026-08-01 회원 안내 1회성 발송. scheduled 핸들러가 연도를 검사하므로 이후 연도에는 no-op.
+  // 발송 완료 후 두 Cron을 제거한다. 자동갱신 Cron은 별도 도입 시 추가.
+  "triggers": { "crons": [] },
 
   "observability": { "enabled": true }
 }

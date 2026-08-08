@@ -9,6 +9,10 @@
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
+import {
+  classBookRequestSatisfied,
+  classEnrollmentEmailCandidates,
+} from "./class-enrollment-access.mjs";
 
 // ── CORS ─────────────────────────────────────────────────
 function corsHeaders(req, env) {
@@ -56,7 +60,7 @@ async function requireAdmin(req, env) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   return verifyAdminToken(env, token); // email or null
 }
-// 사용자 인증: 프론트가 보낸 Supabase access token(X-User-Token)을 서버에서 검증 → {id,email} or null.
+// 사용자 인증: 프론트가 보낸 Supabase access token(X-User-Token)을 서버에서 검증 → {id,email,metadata} or null.
 // 결제 라우트는 토큰의 검증 user_id만 신뢰(클라가 보낸 userId/email 신뢰 금지 — 타인 빌링키 청구 차단).
 async function requireUser(req, env) {
   const tok = req.headers.get("X-User-Token") || "";
@@ -65,7 +69,11 @@ async function requireUser(req, env) {
     const r = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${tok}` } });
     if (!r.ok) return null;
     const u = await r.json().catch(() => null);
-    return u && u.id ? { id: u.id, email: String(u.email || "").toLowerCase() } : null;
+    return u && u.id ? {
+      id: u.id,
+      email: String(u.email || "").toLowerCase(),
+      metadata: u.user_metadata && typeof u.user_metadata === "object" ? u.user_metadata : {},
+    } : null;
   } catch { return null; }
 }
 // 빌링키가 이 사용자 소유인지 확인(charge/subscribe 시) — 등록(issue) 시 바인딩한 user_id와 대조.
@@ -162,15 +170,17 @@ const PORTONE_API = "https://api.portone.io";          // V2 base [CONFIRMED]
 const YANAWAN_PRICE_KRW = 3000;                         // 서버 가격 상수(빌링키 월구독·레거시)
 // 단건 결제 가격표 — 프론트 pricing.js(CHALLENGE_PRICES)와 일치. 금액은 항상 서버가 권위.
 const PRICE_BY_GOAL = { 30: 3000, 66: 5800, 100: 9800 };
-// 클래스 상품 카탈로그(토스 다이렉트) — 서버가 가격·해금 매핑의 단일 권위.
-//   구조 { won, books:[] } (적대검증 2026-07-29): 가격만 있고 books 매핑이 없으면 '돈 받고 미해금' 사고
-//   → books 없는 코드는 unknown_product로 거부된다. 코드 추가 = 판매 개시와 동치(앱에 전 강 실물 선행).
-//   추후 후보(콘텐츠 완비 시): anne 118000·pride 128000·littlewomen1/2 각 99000·gatsby 79000·sherlock 79800·
-//   littlewomen-pack 179800(books=[littlewomen1,littlewomen2,theory])·kidari-pack 99800(🔴실물 배송 상품 — 앱 판매 부적합, 등록 금지)·
-//   stella-allinone 398000(books=강독7+theory 8권 — 스텔라 클럽 즉달 상품. 부분 소유자 이중지불 크레딧 설계 전 등록 보류, 운영자 2026-07-29).
-//   ⚠️ 2026-07-29 운영자: 앱 내 실판매 전면 중단(전 상품 클래스 사이트로) — /purchase는 토스 실가맹 심사 동선으로만 유지.
+// 클래스 상품 카탈로그(토스 다이렉트) — 서버가 상품명·가격·권한 범위의 단일 권위.
+//   신규 MID는 12개월 이용권만 판매한다. 평생소장 398,000원은 기존 LiveKlass 별도 결제다.
+const CLASSICS_ANNUAL_BOOKS = ["kidari", "anne", "littlewomen1", "littlewomen2", "pride", "gatsby", "sherlock", "theory"];
 const PRICE_BY_PRODUCT = {
-  "class-kidari-lifetime": { won: 69000, books: ["kidari"] },
+  "class-classics-annual-8": {
+    won: 198000,
+    books: CLASSICS_ANNUAL_BOOKS,
+    kind: "term_pass",
+    months: 12,
+    orderName: "리터스텔라 클래식 8개 강의 · 12개월 이용권",
+  },
 };
 const YANAWAN_ORDER_NAME = "야나완 영어 챌린지 1개월";
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
@@ -190,16 +200,75 @@ function tossHeaders(env, extra) {
   return { Authorization: `Basic ${btoa(`${env.TOSS_SECRET_KEY}:`)}`, "Content-Type": "application/json", ...(extra || {}) };
 }
 
-// 클래스 수강 권한 부여 — 결제 승인 시 class_enrollments 적재(check_my_class_access RPC가 즉시 인식 = 6강+ 해금).
-//   unique 제약 유무 불명 → 조회 후 삽입(중복 방지). 레이스 시 중복행 무해(존재 판정만 쓰임).
-async function grantClassEnrollment(env, email, bookCode, source) {
+function addUtcMonths(value, months) {
+  const date = new Date(value);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  return date.toISOString();
+}
+
+async function classBooksOwned(env, email, books) {
+  for (const book of books) {
+    const response = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
+    if (!response.ok) return { ok: false, ownedAll: false };
+    const rows = await response.json().catch(() => []);
+    if (!(Array.isArray(rows) && rows.length)) return { ok: true, ownedAll: false };
+  }
+  return { ok: true, ownedAll: true };
+}
+
+async function activeClassPass(env, email, productCode) {
+  const now = new Date().toISOString();
+  const response = await sbFetch(env, `class_access_passes?email=eq.${encodeURIComponent(email)}&product_code=eq.${encodeURIComponent(productCode)}&status=eq.active&expires_at=gt.${encodeURIComponent(now)}&select=payment_id,expires_at&limit=1`);
+  if (!response.ok) return { ok: false, active: false };
+  const rows = await response.json().catch(() => []);
+  return { ok: true, active: Array.isArray(rows) && rows.length > 0, row: Array.isArray(rows) ? rows[0] : null };
+}
+
+async function grantClassPass(env, { email, paymentId, productCode, books, months, source }) {
+  const startsAt = new Date().toISOString();
+  const expiresAt = addUtcMonths(startsAt, months);
   try {
-    const q = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&book_code=eq.${encodeURIComponent(bookCode)}&select=email&limit=1`);
-    const rows = q.ok ? await q.json().catch(() => []) : [];
-    if (Array.isArray(rows) && rows.length) return true;
-    const r = await sbFetch(env, `class_enrollments`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ email, book_code: bookCode, source: source || "toss_purchase" }) });
-    return r.ok;
-  } catch { return false; }
+    const response = await sbFetch(env, `class_access_passes?on_conflict=payment_id`, {
+      method: "POST",
+      // 같은 결제의 confirm·웹훅·새로고침이 겹쳐도 최초 만료일을 연장하거나 취소 권한을 되살리지 않는다.
+      headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+      body: JSON.stringify({
+        payment_id: paymentId,
+        email,
+        product_code: productCode,
+        book_codes: books,
+        starts_at: startsAt,
+        expires_at: expiresAt,
+        status: "active",
+        source: source || "toss_purchase",
+        updated_at: startsAt,
+      }),
+    });
+    const rows = response.ok ? await response.json().catch(() => []) : [];
+    const row = Array.isArray(rows) ? rows[0] : null;
+    if (row) return { ok: row.status === "active", expiresAt: row.expires_at || expiresAt };
+    if (!response.ok) return { ok: false, expiresAt: null };
+
+    const existing = await sbFetch(env, `class_access_passes?payment_id=eq.${encodeURIComponent(paymentId)}&select=status,expires_at&limit=1`);
+    const existingRows = existing.ok ? await existing.json().catch(() => []) : [];
+    const existingRow = Array.isArray(existingRows) ? existingRows[0] : null;
+    return { ok: existingRow?.status === "active", expiresAt: existingRow?.expires_at || null };
+  } catch {
+    return { ok: false, expiresAt: null };
+  }
+}
+
+async function revokeClassPass(env, paymentId, reason) {
+  try {
+    const response = await sbFetch(env, `class_access_passes?payment_id=eq.${encodeURIComponent(paymentId)}&status=eq.active`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ status: "canceled", canceled_reason: String(reason || "payment_canceled").slice(0, 200), canceled_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 // 토스 웹훅 — 토스는 웹훅 서명을 제공하지 않음(공식) → 본문 불신, paymentKey 재조회로만 확정. 10초 내 200 필수.
@@ -218,10 +287,13 @@ async function tossWebhook(req, env, cors) {
           const q = await sbFetch(env, `payments?id=eq.${encodeURIComponent(p.orderId)}&select=email,source`);
           const rows = q.ok ? await q.json().catch(() => []) : [];
           const row = Array.isArray(rows) ? rows[0] : null;
-          // source='toss:{product}' → 카탈로그 books 전부 부여(승인 경로 유실 대비 2중화, 다권 지원)
           const code = String(row?.source || "").startsWith("toss:") ? String(row.source).slice(5) : null;
           const def = code ? PRICE_BY_PRODUCT[code] : null;
-          if (row?.email && def) { for (const bk of def.books) await grantClassEnrollment(env, row.email, bk, "toss_webhook"); }
+          if (row?.email && def?.kind === "term_pass") {
+            await grantClassPass(env, { email: row.email, paymentId: p.orderId, productCode: code, books: def.books, months: def.months, source: "toss_webhook" });
+          }
+        } else if (p.status === "CANCELED") {
+          await revokeClassPass(env, p.orderId, "toss_canceled");
         }
       }
     } catch { /* 실패 시 토스가 최대 7회 재시도 */ }
@@ -310,6 +382,38 @@ async function paymentRoute(req, env, cors, sub) {
     return json({ ok: true, refunded }, 200, cors);
   }
 
+  // 신규 클래스 결제는 결제창을 열기 전에 서버에서 주문을 만든다.
+  //   orderId·상품·금액·이메일을 payments에 먼저 묶어 두므로 복귀 승인 시 브라우저 payload를 신뢰하지 않는다.
+  if (sub === "toss-prepare") {
+    if (!env.TOSS_SECRET_KEY) return json({ ok: false, error: "toss_not_configured" }, 503, cors);
+    const product = String(b.product || "");
+    const prodDef = PRICE_BY_PRODUCT[product];
+    const email = String(b.email || "").slice(0, 200).trim().toLowerCase();
+    if (!prodDef || prodDef.kind !== "term_pass") return json({ ok: false, error: "unknown_product" }, 400, cors);
+    if (!EMAIL_RE.test(email)) return json({ ok: false, error: "bad_email" }, 400, cors);
+
+    const pass = await activeClassPass(env, email, product);
+    if (!pass.ok) return json({ ok: false, error: "pass_not_configured" }, 503, cors);
+    if (pass.active) return json({ ok: false, error: "already_active", expiresAt: pass.row?.expires_at || null }, 409, cors);
+
+    const ownership = await classBooksOwned(env, email, prodDef.books);
+    if (!ownership.ok) return json({ ok: false, error: "ownership_check_failed" }, 503, cors);
+    if (ownership.ownedAll) return json({ ok: false, error: "already_owned" }, 409, cors);
+
+    const orderId = newPaymentId();
+    const stored = await recordPaymentIdempotent(env, {
+      id: orderId,
+      email,
+      amount: prodDef.won,
+      status: "READY",
+      source: `toss:${product}`,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    if (!stored) return json({ ok: false, error: "order_store_failed" }, 503, cors);
+    return json({ ok: true, orderId, amount: prodDef.won, orderName: prodDef.orderName }, 200, cors);
+  }
+
   // ── 토스페이먼츠 다이렉트 단건 승인 (2026-07-20 PG 전환 — 신규 결제 유일 경로) ──
   //   결제창 redirect 복귀 후 프론트가 호출. 금액 = 서버 가격표 권위(redirect amount 신뢰 X — 토스 공식 권고).
   //   토큰 선택: 로그인=user 바인딩 / 게스트(상품 상세 비회원 구매)=email만 기록 → requireUser 게이트 앞에 위치.
@@ -320,28 +424,24 @@ async function paymentRoute(req, env, cors, sub) {
     const orderId = String(b.orderId || "");
     if (!paymentKey || !orderId) return json({ ok: false, error: "missing_params" }, 400, cors);
     if (!/^[A-Za-z0-9_-]{6,64}$/.test(orderId)) return json({ ok: false, error: "bad_order_id" }, 400, cors);
-    const goalDays = Number(b.goalDays);
-    // 상품 결정: product(클래스 카탈로그) 우선 → goalDays(챌린지) → 30일 폴백. 금액은 항상 서버 권위.
-    const product = String(b.product || "");
-    const prodDef = PRICE_BY_PRODUCT[product];
-    if (product && !(prodDef && Array.isArray(prodDef.books) && prodDef.books.length)) {
-      return json({ ok: false, error: "unknown_product" }, 400, cors); // books 매핑 없는 코드 = 판매 불가(미해금 사고 방지)
-    }
-    const expected = prodDef?.won || PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
     const maybeUser = await requireUser(req, env); // null 허용(게스트)
 
-    // 🔒 중복 과금 방어(적대검증 2026-07-29): 이미 전 구성 book을 소장한 이메일이면 승인 자체를 거부
-    //    — confirm 안 하면 인증만 되고 돈이 이동하지 않는다(카드 미청구). already_owned로 안내.
-    const preEmail = maybeUser?.email || (b.email ? String(b.email).slice(0, 200).toLowerCase().trim() : null);
-    if (prodDef && preEmail) {
-      let ownedAll = true;
-      for (const bk of prodDef.books) {
-        const q = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(preEmail)}&book_code=eq.${encodeURIComponent(bk)}&select=email&limit=1`);
-        const rows = q.ok ? await q.json().catch(() => []) : [];
-        if (!(Array.isArray(rows) && rows.length)) { ownedAll = false; break; }
-      }
-      if (ownedAll) return json({ ok: false, error: "already_owned", message: "이미 소장 중인 강의예요 — 결제되지 않았습니다. 로그인하면 바로 이용할 수 있어요." }, 409, cors);
-    }
+    // 클래스 주문은 toss-prepare에서 저장한 행만 승인한다. 챌린지 단건 결제는 기존 goalDays 경로를 유지한다.
+    const preparedResponse = await sbFetch(env, `payments?id=eq.${encodeURIComponent(orderId)}&select=id,email,user_id,amount,status,source&limit=1`);
+    const preparedRows = preparedResponse.ok ? await preparedResponse.json().catch(() => []) : [];
+    const prepared = Array.isArray(preparedRows) ? preparedRows[0] : null;
+    const preparedProduct = String(prepared?.source || "").startsWith("toss:") ? String(prepared.source).slice(5) : "";
+    const prodDef = preparedProduct ? PRICE_BY_PRODUCT[preparedProduct] : null;
+    const isPreparedClassOrder = !!(prepared && prodDef?.kind === "term_pass");
+    const goalDays = Number(b.goalDays);
+    const expected = isPreparedClassOrder ? Number(prepared.amount) : (PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW);
+    const redirectAmount = Number(b.amount);
+    if (isPreparedClassOrder && expected !== prodDef.won) return json({ ok: false, error: "order_amount_invalid" }, 409, cors);
+    if (isPreparedClassOrder && redirectAmount !== expected) return json({ ok: false, error: "amount_mismatch" }, 400, cors);
+    const email = isPreparedClassOrder
+      ? String(prepared.email || "").trim().toLowerCase()
+      : (maybeUser?.email || (b.email ? String(b.email).slice(0, 200).toLowerCase().trim() : null));
+    if (isPreparedClassOrder && !EMAIL_RE.test(email)) return json({ ok: false, error: "order_email_invalid" }, 409, cors);
 
     const cr = await fetch(`${TOSS_API}/v1/payments/confirm`, {
       method: "POST", headers: tossHeaders(env, { "Idempotency-Key": orderId }),
@@ -355,25 +455,32 @@ async function paymentRoute(req, env, cors, sub) {
       const qp = qr.ok ? await qr.json().catch(() => null) : null;
       if (qp?.status === "DONE" && qp?.totalAmount === expected) { paid = true; pay = qp; }
     }
-    const email = preEmail;
     await recordPaymentIdempotent(env, {
       id: orderId, payment_key: paymentKey,
-      user_id: maybeUser?.id || null,
+      user_id: maybeUser?.id || prepared?.user_id || null,
       email,
-      amount: pay?.totalAmount ?? null,
+      // 준비 주문은 토스의 일시 오류 응답에 totalAmount가 없어도 서버 확정 금액을 보존한다.
+      // null로 덮으면 다음 승인 재시도에서 주문 금액을 복구할 수 없다.
+      amount: isPreparedClassOrder ? expected : (pay?.totalAmount ?? null),
       status: paid ? "DONE" : (pay?.code || pay?.status || "confirm_failed"),
-      source: product ? `toss:${product}` : "toss_single", updated_at: new Date().toISOString(),
+      source: isPreparedClassOrder ? prepared.source : "toss_single", updated_at: new Date().toISOString(),
     });
-    // 클래스 상품 승인 → 구성 book 전부 수강 권한 부여(다권 번들 지원 — 이메일 명단 매칭 = 로그인만 하면 해금)
+
     let granted = false;
-    if (paid && prodDef && email) {
-      granted = true;
-      for (const bk of prodDef.books) {
-        const ok = await grantClassEnrollment(env, email, bk, "toss_purchase");
-        granted = granted && ok;
-      }
+    let expiresAt = null;
+    if (paid && isPreparedClassOrder && email) {
+      const grant = await grantClassPass(env, {
+        email,
+        paymentId: orderId,
+        productCode: preparedProduct,
+        books: prodDef.books,
+        months: prodDef.months,
+        source: "toss_purchase",
+      });
+      granted = grant.ok;
+      expiresAt = grant.expiresAt;
     }
-    return paid ? json({ ok: true, orderId, ...(product ? { granted } : {}) }, 200, cors)
+    return paid ? json({ ok: true, orderId, ...(isPreparedClassOrder ? { granted, email, expiresAt } : {}) }, granted || !isPreparedClassOrder ? 200 : 202, cors)
                 : json({ ok: false, error: pay?.code || "not_paid", toss: { status: pay?.status, code: pay?.code } }, 402, cors);
   }
 
@@ -501,10 +608,11 @@ function brandEmailHtml(bodyHtml) {
     + `<div style="margin-top:12px;color:#b0a892;">© LiterStella · 영어 원서를 끝까지 읽는 습관</div>`
     + `</td></tr></table></td></tr></table></body></html>`;
 }
-function otpEmailHtml(code) {
+function otpEmailHtml(code, issuedAt) {
   const body = `<div style="font-size:18px;font-weight:800;margin-bottom:8px;">이메일 인증 코드</div>`
     + `<p style="margin:0 0 16px;color:#5a5446;">아래 6자리 코드를 회원가입 화면에 입력해 주세요. (10분 내 유효)</p>`
     + `<div style="font-size:34px;font-weight:900;letter-spacing:10px;color:#c8a84b;text-align:center;padding:18px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;">${code}</div>`
+    + `<p style="margin:12px 0 0;font-size:12px;color:#8a8270;text-align:center;">발급 시각 ${issuedAt} · 가장 최근에 받은 코드만 입력해 주세요.</p>`
     + `<p style="margin:16px 0 0;font-size:13px;color:#8a8270;">본인이 요청하지 않았다면 이 메일을 무시하세요.</p>`;
   return brandEmailHtml(body);
 }
@@ -534,6 +642,179 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
     await new Promise((res) => setTimeout(res, 400 * Math.pow(2, attempt))); // 0.4s → 0.8s
   }
   return false;
+}
+
+const RESEND_MIGRATION_TEMPLATE = "8511cc4c-1f05-412c-a1c0-cfea2358ca2f";
+const MIGRATION_CRON = "50 23 30 7 *"; // 2026-07-31 08:50 KST, one-time send
+
+async function fetchAllResendContacts(env) {
+  const contacts = [];
+  let after = "";
+  for (let page = 0; page < 100; page++) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (after) query.set("after", after);
+    let response = null;
+    for (let attempt = 0; attempt <= 4; attempt++) {
+      response = await fetch(
+        `https://api.resend.com/contacts?${query}`,
+        { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } },
+      );
+      if (response.ok) break;
+      if (response.status !== 429 && response.status < 500) break;
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+    }
+    if (!response.ok) throw new Error(`resend_contacts_${response.status}`);
+    const body = await response.json().catch(() => null);
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    contacts.push(...rows);
+    if (!body?.has_more || !rows.length) break;
+    const next = String(rows[rows.length - 1]?.id || "");
+    if (!next || next === after) throw new Error("resend_contacts_pagination");
+    after = next;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  return contacts;
+}
+
+async function fetchAllClassEnrollmentEmails(env) {
+  const emails = new Set();
+  const pageSize = 1000;
+  for (let offset = 0; offset < 100_000; offset += pageSize) {
+    const response = await sbFetch(env, `class_enrollments?select=email&order=email.asc&limit=${pageSize}&offset=${offset}`);
+    if (!response.ok) throw new Error(`class_enrollment_audience_${response.status}`);
+    const rows = (await response.json().catch(() => [])) || [];
+    for (const row of rows) {
+      const email = String(row?.email || "").trim().toLowerCase();
+      if (EMAIL_RE.test(email)) emails.add(email);
+    }
+    if (rows.length < pageSize) break;
+  }
+  if (!emails.size) throw new Error("class_enrollment_audience_empty");
+  return emails;
+}
+
+async function sendResendTemplateBatches(env, contacts, templateId, variablesFor, campaignKey) {
+  const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
+  let sent = 0;
+  let failed = 0;
+  for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
+    const selected = contacts.slice(offset, offset + RESEND_BATCH_SIZE);
+    const batch = selected.map((contact) => ({
+      from,
+      to: [contact.email],
+      template: { id: templateId, variables: variablesFor(contact) },
+    }));
+    let ok = false;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const response = await fetch("https://api.resend.com/emails/batch", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${campaignKey}-${offset}`,
+          },
+          body: JSON.stringify(batch),
+        });
+        if (response.ok) {
+          ok = true;
+          break;
+        }
+        const retryable = response.status === 429 || response.status >= 500;
+        const detail = await response.text().catch(() => "");
+        console.log(JSON.stringify({
+          evt: "campaign_batch_fail",
+          campaignKey,
+          offset,
+          status: response.status,
+          detail: detail.slice(0, 160),
+        }));
+        if (!retryable) break;
+      } catch { /* retry below */ }
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+    if (ok) sent += batch.length;
+    else failed += batch.length;
+    if (offset + RESEND_BATCH_SIZE < contacts.length) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  }
+  console.log(JSON.stringify({ evt: "campaign_complete", campaignKey, sent, failed }));
+  return { sent, failed };
+}
+
+async function runMigrationNoticeCampaign(env) {
+  const [contacts, enrollmentEmails] = await Promise.all([
+    fetchAllResendContacts(env),
+    fetchAllClassEnrollmentEmails(env),
+  ]);
+  const byEmail = new Map();
+  for (const contact of contacts) {
+    const email = String(contact?.email || "").trim().toLowerCase();
+    const isLifetimeMember = classEnrollmentEmailCandidates(email).some((candidate) => enrollmentEmails.has(candidate));
+    if (EMAIL_RE.test(email) && contact?.unsubscribed !== true && isLifetimeMember) byEmail.set(email, { ...contact, email });
+  }
+  if (!byEmail.size) throw new Error("migration_audience_empty");
+  return sendResendTemplateBatches(
+    env,
+    [...byEmail.values()],
+    RESEND_MIGRATION_TEMPLATE,
+    (contact) => ({
+      MEMBER_NAME: String(contact.first_name || "수강생").trim() || "수강생",
+      CONNECTION_URL: "https://class-new.literstella.co.kr/verify?utm_source=resend&utm_medium=email&utm_campaign=lifetime_course_migration_2608",
+      STABILIZATION_DATE: "2026년 8월 31일",
+      SUPPORT_URL: "http://pf.kakao.com/_xkxdZxeb/chat",
+      PRIVACY_URL: "https://read.literstella.co.kr/privacy",
+    }),
+    "migration-20260801-0800",
+  );
+}
+
+// 사용자가 클래스 연결 화면에서 선택 마케팅 수신에 명시적으로 동의한 경우에만
+// 오후 Stella 혜택 Broadcast 세그먼트에 본인 이메일을 추가한다.
+async function syncStellaMarketingOptIn(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "auth" }, 401, cors);
+  if (user.metadata?.marketing_opt_in !== true || !user.metadata?.marketing_opt_in_at) {
+    return json({ ok: false, error: "consent_required" }, 403, cors);
+  }
+  if (!env.RESEND_API_KEY || !env.RESEND_STELLA_OPTIN_SEGMENT_ID) {
+    return json({ ok: false, error: "resend_config_missing" }, 503, cors);
+  }
+
+  const headers = {
+    Authorization: `Bearer ${env.RESEND_API_KEY}`,
+    "Content-Type": "application/json",
+  };
+  const email = encodeURIComponent(user.email);
+  const segmentId = encodeURIComponent(env.RESEND_STELLA_OPTIN_SEGMENT_ID);
+
+  try {
+    let response = await fetch(`https://api.resend.com/contacts/${email}/segments/${segmentId}`, {
+      method: "POST",
+      headers,
+    });
+
+    if (response.status === 404) {
+      response = await fetch("https://api.resend.com/contacts", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          email: user.email,
+          unsubscribed: false,
+          segments: [{ id: env.RESEND_STELLA_OPTIN_SEGMENT_ID }],
+        }),
+      });
+    }
+
+    if (!response.ok) {
+      console.log(JSON.stringify({ evt: "stella_optin_sync_fail", status: response.status, userId: user.id }));
+      return json({ ok: false, error: "resend_sync_failed" }, 502, cors);
+    }
+    return json({ ok: true }, 200, cors);
+  } catch {
+    return json({ ok: false, error: "resend_network" }, 502, cors);
+  }
 }
 
 // Resend 마케팅 플랜의 1회 대상 한도에 맞춘 애플리케이션 세그먼트.
@@ -633,7 +914,18 @@ async function otpSend(req, env, cors) {
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
   const exp = Date.now() + OTP_TTL_MS;
   const sig = await hmacHex(env.OTP_SECRET, `code:${email}:${code}:${exp}`);
-  const sent = await sendResendEmail(env, { to: email, subject: "[리터스텔라] 이메일 인증 코드", html: otpEmailHtml(code) });
+  const issuedAt = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date());
+  const sent = await sendResendEmail(env, {
+    to: email,
+    subject: `[리터스텔라] 이메일 인증 코드 · ${issuedAt}`,
+    html: otpEmailHtml(code, issuedAt),
+  });
   if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
   return json({ ok: true, token: `${exp}.${sig}`, exp }, 200, cors);
 }
@@ -654,6 +946,27 @@ async function otpVerify(req, env, cors) {
 //   OTP HMAC 검증(otpVerify와 동일 서명식) = 이메일 소유 증명 → class_enrollments(명단) 대조 →
 //   진짜 수강생이면 class_verifications(email, book_code) 기록(멱등). 게이트 워커가 이 행만 6강+ 자격으로 인정.
 //   ⚠️ 이메일만 알면 signUp으로 JWT 얻어도, 그 이메일 OTP는 못 받으므로 verifications 못 만듦 = 탈취 차단.
+async function findClassEnrollments(env, email) {
+  const byBook = new Map();
+  for (const enrollmentEmail of classEnrollmentEmailCandidates(email)) {
+    const response = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(enrollmentEmail)}&select=book_code`);
+    if (!response.ok) return { ok: false, records: [], books: [] };
+    const rows = (await response.json().catch(() => [])) || [];
+    for (const row of rows) {
+      const bookCode = String(row?.book_code || "").trim().toLowerCase();
+      if (bookCode && !byBook.has(bookCode)) byBook.set(bookCode, enrollmentEmail);
+    }
+  }
+  const records = [...byBook].map(([bookCode, enrollmentEmail]) => ({ bookCode, enrollmentEmail }));
+  return { ok: true, records, books: records.map((record) => record.bookCode) };
+}
+
+async function verifiedBooksForLogin(env, loginEmail) {
+  const response = await sbFetch(env, `class_verifications?email=eq.${encodeURIComponent(loginEmail)}&select=book_code`);
+  if (!response.ok) return [];
+  return [...new Set((((await response.json().catch(() => [])) || []).map((row) => row?.book_code).filter(Boolean)))];
+}
+
 async function classVerifyOtp(req, env, cors) {
   let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
   const email = String(b.email || "").trim().toLowerCase();
@@ -669,16 +982,25 @@ async function classVerifyOtp(req, env, cors) {
   // 이메일 소유 증명됨 → 수강 명단 대조(service_role).
   //   🔴 인증 1회 = 평생소장 전부(운영자 2026-07-20): 요청한 강좌 하나가 아니라 이 이메일이 명단에 있는
   //   모든 book_code에 verifications를 일괄 심는다 — 다른 소장 강좌는 재인증 없이 즉시 열림.
-  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&select=book_code`);
-  const books = enr.ok ? [...new Set(((await enr.json()) || []).map(r => r.book_code).filter(Boolean))] : [];
+  const enrollment = await findClassEnrollments(env, email);
+  if (!enrollment.ok) return json({ ok: false, error: "roster_lookup_failed" }, 502, cors);
+  const { books, records } = enrollment;
   if (!books.length) return json({ ok: false, notEnrolled: true, message: "이 이메일은 강독 클래스 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
   const ins = await sbFetch(env, `class_verifications`, {
     method: "POST",
     headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
-    body: JSON.stringify(books.map(bc => ({ email, book_code: bc }))),
+    body: JSON.stringify(records.map(({ bookCode, enrollmentEmail }) => ({
+      email,
+      book_code: bookCode,
+      enrollment_email: enrollmentEmail,
+    }))),
   });
-  if (!ins.ok && ins.status !== 409) return json({ ok: false, error: "record_failed" }, 502, cors);
-  if (!books.includes(book)) {
+  if (!ins.ok) return json({ ok: false, error: "record_failed" }, 502, cors);
+  const verifiedBooks = await verifiedBooksForLogin(env, email);
+  if (!books.every((ownedBook) => verifiedBooks.includes(ownedBook))) {
+    return json({ ok: false, alreadyLinked: true, message: "이 수강 이메일은 이미 다른 계정에 연결돼 있어요. 카카오 채널로 문의해 주세요." }, 200, cors);
+  }
+  if (!classBookRequestSatisfied(book, books)) {
     return json({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 열렸어요." }, 200, cors);
   }
   return json({ ok: true, granted: books }, 200, cors);
@@ -706,21 +1028,26 @@ async function classLinkEnrollment(req, env, cors) {
   if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
   // 결제 이메일 소유 증명됨 → 수강 명단 대조.
   //   🔴 인증 1회 = 평생소장 전부(운영자 2026-07-20): 이 결제 이메일이 명단에 있는 모든 book_code를 로그인 계정에 일괄 귀속.
-  const enr = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(enrollEmail)}&select=book_code`);
-  const books = enr.ok ? [...new Set(((await enr.json()) || []).map(r => r.book_code).filter(Boolean))] : [];
+  const enrollment = await findClassEnrollments(env, enrollEmail);
+  if (!enrollment.ok) return json({ ok: false, error: "roster_lookup_failed" }, 502, cors);
+  const { books, records } = enrollment;
   if (!books.length) return json({ ok: false, notEnrolled: true, message: "이 이메일은 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
   // 1회 귀속 사전 확인(친절 메시지용 — 최종 방어는 unique index): 어느 강좌든 다른 계정에 이미 귀속된 메일이면 전체 차단(공유 루프홀 방지).
-  const linked = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollEmail)}&select=email&limit=5`);
-  if (linked.ok) {
-    const rows = (await linked.json()) || [];
-    if (rows.some(r => r.email !== loginEmail)) {
-      return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요. 그 계정으로 로그인하시거나, 본인 수강권이 맞는데 연결이 안 된다면 카카오 채널로 문의해 주세요." }, 200, cors);
+  for (const enrollmentEmail of [...new Set(records.map((record) => record.enrollmentEmail))]) {
+    const linked = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollmentEmail)}&select=email&limit=10`);
+    if (linked.ok) {
+      const rows = (await linked.json()) || [];
+      if (rows.some(r => r.email !== loginEmail)) {
+        return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요. 그 계정으로 로그인하시거나, 본인 수강권이 맞는데 연결이 안 된다면 카카오 채널로 문의해 주세요." }, 200, cors);
+      }
+    } else {
+      return json({ ok: false, error: "verification_lookup_failed" }, 502, cors);
     }
   }
   const ins = await sbFetch(env, `class_verifications`, {
     method: "POST",
     headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
-    body: JSON.stringify(books.map(bc => ({ email: loginEmail, book_code: bc, enrollment_email: enrollEmail }))),
+    body: JSON.stringify(records.map(({ bookCode, enrollmentEmail }) => ({ email: loginEmail, book_code: bookCode, enrollment_email: enrollmentEmail }))),
   });
   if (!ins.ok) {
     const t = await ins.text().catch(() => "");
@@ -729,13 +1056,17 @@ async function classLinkEnrollment(req, env, cors) {
     // unique index 충돌(동시 연결 레이스) = 다른 계정이 먼저 귀속
     if (ins.status === 409 || /23505|duplicate/i.test(t)) {
       // 로그인 계정 자신의 (email,book) PK 중복이면 멱등 성공
-      const mine = await sbFetch(env, `class_verifications?email=eq.${encodeURIComponent(loginEmail)}&book_code=eq.${encodeURIComponent(book)}&select=email&limit=1`);
-      if (mine.ok && (await mine.json()).length) return json({ ok: true, granted: books }, 200, cors);
+      const verifiedBooks = await verifiedBooksForLogin(env, loginEmail);
+      if (books.every((ownedBook) => verifiedBooks.includes(ownedBook))) return json({ ok: true, granted: books }, 200, cors);
       return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." }, 200, cors);
     }
     return json({ ok: false, error: "record_failed" }, 502, cors);
   }
-  if (!books.includes(book)) {
+  const verifiedBooks = await verifiedBooksForLogin(env, loginEmail);
+  if (!books.every((ownedBook) => verifiedBooks.includes(ownedBook))) {
+    return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." }, 200, cors);
+  }
+  if (!classBookRequestSatisfied(book, books)) {
     return json({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 연결됐어요." }, 200, cors);
   }
   return json({ ok: true, granted: books }, 200, cors);
@@ -963,6 +1294,11 @@ export default {
       return lifecycleEmail(req, env, cors);
     }
 
+    if (path === "/api/marketing/subscribe-stella") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return syncStellaMarketingOptIn(req, env, cors);
+    }
+
     // 스텔라 등급 신청 메일: 회원 신청 → 관리자, 관리자 쿠폰 입력 → 회원 이메일.
     // 금액·수신자는 브라우저 payload가 아니라 service_role로 신청 행을 다시 읽어 확정한다.
     if (path.startsWith("/api/stella-upgrade/")) {
@@ -1021,6 +1357,11 @@ export default {
   // 자동갱신 Cron (wrangler triggers 활성 후 매일 1회) — next_charge_at 도래 구독 재청구.
   // 단일 모델(cron만 청구, 포트원 스케줄 미사용)이라 이중청구 없음.
   async scheduled(event, env, ctx) {
+    const scheduledDate = new Date(event.scheduledTime);
+    if (event.cron === MIGRATION_CRON) {
+      if (scheduledDate.getUTCFullYear() === 2026) ctx.waitUntil(runMigrationNoticeCampaign(env));
+      return;
+    }
     if (env.PAYMENT_ENABLED !== "true") return;
     const nowIso = new Date().toISOString();
     const DAY_MS = 24 * 60 * 60 * 1000;
