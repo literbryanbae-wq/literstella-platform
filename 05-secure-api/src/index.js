@@ -718,6 +718,151 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
   return false;
 }
 
+// 발송 차단(suppression) 사전 조회 — 트랜잭션 메일(OTP·비번재설정) 전용.
+//   🔴 왜 필요한가(2026-08-18 사고): Resend는 차단된 주소로 보내려 해도 HTTP 200 + {id}를 준다.
+//      sendResendEmail은 r.ok만 보므로 "발송 성공"으로 판정 → 화면엔 "보냈어요"만 뜨고 메일은 안 간다.
+//      실제로 7/24 대량 안내 메일 반송으로 카카오·다음 계열 다수가 3주간 인증 코드를 못 받았고,
+//      사용자는 10분 뒤 '코드 만료' 문구만 봤다(원인 정보 0). 그래서 보내기 전에 물어본다.
+//   ⚠️ fail-open: 조회가 실패(401·5xx·네트워크)하면 "차단"으로 단정하지 않고 발송을 진행한다
+//      — 조회 장애가 로그인 전면 차단으로 번지면 안 된다.
+async function isEmailSuppressed(env, email) {
+  if (!env.RESEND_API_KEY) return false;
+  try {
+    const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    });
+    if (r.status === 404) return false;  // 목록에 없음 = 정상 주소
+    if (r.ok) return true;               // 200 = 차단 중 → 보내봐야 안 간다
+    console.log(JSON.stringify({ evt: "suppression_check_fail", status: r.status }));
+    return false;
+  } catch (e) {
+    console.log(JSON.stringify({ evt: "suppression_check_fail", status: "network", detail: String(e).slice(0, 100) }));
+    return false;
+  }
+}
+
+// 차단 주소가 인증 코드를 시도했다 = 고객이 지금 로그인을 못 하고 있다는 신호 → 운영자에게 알린다.
+//   같은 주소로 하루 1통만(반복 시도 9회에 9통 가는 것 방지 — KV 없으면 알림을 건너뛴다).
+async function notifySuppressedAttempt(env, email) {
+  try {
+    if (env.OTP_GUARD) {
+      const k = `sup-notify:${email}`;
+      if (await env.OTP_GUARD.get(k)) return;
+      await env.OTP_GUARD.put(k, "1", { expirationTtl: 86400 });
+    }
+    const admin = env.ADMIN_EMAIL || "literbryanbae@gmail.com";
+    await sendResendEmail(env, {
+      to: admin,
+      subject: `[리터스텔라] 인증 메일 차단 — ${maskEmailAddr(email)} 로그인 못 함`,
+      html: brandEmailHtml(
+        `<p style="margin:0 0 12px;font-size:15px;">아래 주소가 인증 코드를 요청했지만 <b>발송 차단 목록</b>에 있어 메일이 나가지 않았어요.</p>`
+        + `<p style="margin:0 0 12px;font-size:15px;"><b>${email}</b></p>`
+        + `<p style="margin:0 0 12px;font-size:13px;color:#6b6355;line-height:1.7;">차단 원인이 대량 발송 반송이면 해제해도 안전합니다. Resend 대시보드 → Suppressions에서 확인해 주세요. 사용자에게는 화면에서 카카오 채널로 문의하도록 안내되고 있어요.</p>`
+      ),
+      idempotencyKey: `supnotify:${email}:${new Date().toISOString().slice(0, 10)}`,
+    });
+  } catch { /* 알림 실패가 로그인 흐름을 막지 않는다 */ }
+}
+
+// ── Resend 반송·스팸신고 웹훅 수신 (2026-08-18 신설) ──────────────────────────
+//   🔴 왜: 7/24 대량 안내 메일이 수백 건 반송돼 카카오·다음 계열이 무더기로 차단됐는데,
+//      반송을 받아보는 창구가 어디에도 없어 3주 동안 아무도 몰랐다. 그 사이 유료 수강생들이
+//      로그인·수강 연결을 못 했다. 이제 반송이 오는 즉시 기록하고, 몰려오면 운영자에게 알린다.
+//   서명 = Svix 표준(결제 웹훅과 동일 계산식, 헤더 이름만 svix-*). 검증 실패는 401로 버린다.
+async function verifySvixSignature(secret, raw, id, ts, sig) {
+  if (!secret || !id || !ts || !sig) return false;
+  const now = Math.floor(Date.now() / 1000), tsNum = Number(ts);
+  if (!Number.isFinite(tsNum) || Math.abs(now - tsNum) > 300) return false;      // ±5분
+  let keyBytes; try { keyBytes = b64ToBytes(secret.startsWith("whsec_") ? secret.slice(6) : secret); } catch { return false; }
+  let expected; try { expected = await hmacSha256Base64(keyBytes, `${id}.${ts}.${raw}`); } catch { return false; }
+  return String(sig).split(" ").some((part) => {
+    const c = part.indexOf(",");
+    return c > 0 && part.slice(0, c) === "v1" && timingSafeEq(part.slice(c + 1), expected);
+  });
+}
+
+const BOUNCE_EVENTS = ["email.bounced", "email.complained", "email.failed", "email.suppressed"];
+// 제목으로 트랜잭션 여부를 가른다 — 트랜잭션 반송은 "그 사람이 지금 못 들어온다"는 뜻이라 무게가 다르다.
+const TX_SUBJECT_RE = /인증 코드|비밀번호 재설정|수강 연결/;
+
+async function resendWebhook(req, env, cors) {
+  const raw = await req.text();
+  const ok = await verifySvixSignature(
+    env.RESEND_WEBHOOK_SECRET, raw,
+    req.headers.get("svix-id"), req.headers.get("svix-timestamp"), req.headers.get("svix-signature"),
+  );
+  if (!ok) return json({ ok: false, error: "bad_signature" }, 401, cors);
+  let ev; try { ev = JSON.parse(raw); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const type = String(ev?.type || "");
+  if (!BOUNCE_EVENTS.includes(type)) return json({ ok: true, ignored: type }, 200, cors);
+
+  const d = ev.data || {};
+  const to = String(Array.isArray(d.to) ? d.to[0] : (d.to || "")).trim().toLowerCase();
+  if (!to) return json({ ok: true, ignored: "no_recipient" }, 200, cors);
+  const subject = String(d.subject || "").slice(0, 200);
+  const row = {
+    email: to,
+    event: type.replace(/^email\./, ""),
+    bounce_type: d.bounce?.type ? String(d.bounce.type).slice(0, 40) : null,
+    bounce_subtype: d.bounce?.subType ? String(d.bounce.subType).slice(0, 40) : null,
+    reason: d.bounce?.message ? String(d.bounce.message).slice(0, 500) : null,
+    subject,
+    resend_email_id: d.email_id ? String(d.email_id).slice(0, 80) : null,
+    is_transactional: TX_SUBJECT_RE.test(subject),
+    occurred_at: d.created_at || ev.created_at || new Date().toISOString(),
+  };
+  try {
+    // 같은 메일의 같은 이벤트가 재전송돼도 한 줄만 남는다(부분 유니크 인덱스 + ignore-duplicates).
+    await sbFetch(env, "email_bounces?on_conflict=resend_email_id,event", {
+      method: "POST",
+      headers: { Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify([row]),
+    });
+  } catch (e) {
+    console.log(JSON.stringify({ evt: "bounce_record_fail", detail: String(e).slice(0, 120) }));
+  }
+  await maybeAlertBounceSurge(env, row);
+  return json({ ok: true }, 200, cors);
+}
+
+// 반송이 "몰려오는" 순간을 잡는다 — 7/24처럼 대량 발송이 통째로 거부되는 사고를 당일에 알기 위해.
+//   트랜잭션 반송은 1건이라도 알린다(그 사람이 못 들어온다는 뜻). 마케팅은 10분 20건 이상일 때만.
+async function maybeAlertBounceSurge(env, row) {
+  try {
+    const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    let recent = 0;
+    try {
+      const r = await sbFetch(env, `email_bounces?occurred_at=gte.${encodeURIComponent(since)}&select=id`, {
+        headers: { Prefer: "count=exact", Range: "0-0" },
+      });
+      const cr = r.headers.get("content-range") || "";
+      recent = Number(cr.split("/")[1]) || 0;
+    } catch { /* 집계 실패는 알림 판단만 보수적으로 */ }
+    const surge = recent >= 20;
+    if (!row.is_transactional && !surge) return;
+    if (env.OTP_GUARD) {                                   // 폭주 시 알림 자체가 폭주하지 않도록 10분에 1통
+      const k = surge ? "bounce-surge-alert" : `bounce-tx-alert:${row.email}`;
+      if (await env.OTP_GUARD.get(k)) return;
+      await env.OTP_GUARD.put(k, "1", { expirationTtl: surge ? 600 : 86400 });
+    }
+    const admin = env.ADMIN_EMAIL || "literbryanbae@gmail.com";
+    const head = surge
+      ? `<p style="margin:0 0 12px;font-size:15px;"><b>최근 10분 동안 반송이 ${recent}건</b> 발생했어요. 대량 발송이 통째로 거부되는 중일 수 있습니다.</p>`
+      : `<p style="margin:0 0 12px;font-size:15px;"><b>인증 메일이 반송</b>됐어요. 이 분은 지금 로그인하지 못하는 상태입니다.</p>`;
+    await sendResendEmail(env, {
+      to: admin,
+      subject: surge ? `[리터스텔라] ⚠️ 반송 급증 — 10분 ${recent}건` : `[리터스텔라] 인증 메일 반송 — ${maskEmailAddr(row.email)}`,
+      html: brandEmailHtml(
+        head
+        + `<p style="margin:0 0 10px;font-size:14px;">주소: <b>${row.email}</b><br />제목: ${row.subject || "-"}<br />유형: ${row.bounce_type || "-"} / ${row.bounce_subtype || "-"}</p>`
+        + (row.reason ? `<p style="margin:0 0 12px;font-size:12.5px;color:#6b6355;line-height:1.6;">사유: ${row.reason}</p>` : "")
+        + `<p style="margin:0;font-size:12.5px;color:#6b6355;line-height:1.7;">반송된 주소는 Resend가 자동으로 차단 목록에 올려 <b>이후 인증 메일까지 막습니다.</b> 대량 발송 거부가 원인이면 Suppressions에서 해제해 주세요.</p>`
+      ),
+      idempotencyKey: `bouncealert:${surge ? "surge" : row.email}:${new Date().toISOString().slice(0, 13)}`,
+    });
+  } catch { /* 알림 실패가 웹훅 200을 막지 않는다 */ }
+}
+
 const RESEND_MIGRATION_TEMPLATE = "8511cc4c-1f05-412c-a1c0-cfea2358ca2f";
 const MIGRATION_CRON = "50 23 30 7 *"; // 2026-07-31 08:50 KST, one-time send
 
@@ -767,8 +912,25 @@ async function fetchAllClassEnrollmentEmails(env) {
   return emails;
 }
 
+// ── 마케팅 대량 발송 규약 (2026-08-18 신설) ──────────────────────────────────
+//   🔴 7/24 이관 안내 메일 2,545통을 한 번에 보냈다가 카카오·다음 계열이 무더기로 거부했고,
+//      그 반송이 Resend 차단 목록에 쌓여 같은 사람들의 '인증 코드'까지 3주간 막혔다.
+//   대량 발송이 거부되는 대표 원인이 수신거부 헤더 부재다 — Gmail·Yahoo는 대량 발송자에게
+//   List-Unsubscribe(원클릭)를 요구하고, 없으면 스팸·차단으로 처리한다. 본문 링크만으론 부족하다.
+//   ⚠️ 차단 목록(suppression)은 Resend '계정' 단위라 발신 주소만 바꿔도 공유된다.
+//      FROM 분리는 평판 격리와 향후 계정 분리를 위한 준비이고, 오염 차단 자체는 아니다.
+const MARKETING_UNSUB_URL = "https://challenge.literstella.co.kr/?view=settings";
+const MARKETING_HEADERS = {
+  "List-Unsubscribe": `<${MARKETING_UNSUB_URL}>, <mailto:literbryanbae@gmail.com?subject=unsubscribe>`,
+  "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+};
+// 마케팅 전용 발신 주소. 미설정이면 기존 주소로 폴백(동작 불변) — 서브도메인/별도 계정 전환 시 이 값만 바꾼다.
+function marketingFrom(env) {
+  return env.RESEND_FROM_MARKETING || env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
+}
+
 async function sendResendTemplateBatches(env, contacts, templateId, variablesFor, campaignKey) {
-  const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
+  const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
   for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
@@ -776,6 +938,7 @@ async function sendResendTemplateBatches(env, contacts, templateId, variablesFor
     const batch = selected.map((contact) => ({
       from,
       to: [contact.email],
+      headers: MARKETING_HEADERS,          // 원클릭 수신거부 — 없으면 대량 발송이 통째로 거부된다
       template: { id: templateId, variables: variablesFor(contact) },
     }));
     let ok = false;
@@ -910,12 +1073,12 @@ function getAudienceSegment(emails, segment) {
 }
 async function sendResendBatch(env, { to, subject, html, templateId }) {
   if (!env.RESEND_API_KEY || !Array.isArray(to) || !to.length) return { sent: 0, failed: 0 };
-  const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>";
+  const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
   for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
     const batch = to.slice(offset, offset + RESEND_BATCH_SIZE).map(email => {
-      const message = { from, to: [email] };
+      const message = { from, to: [email], headers: MARKETING_HEADERS };
       if (templateId) message.template = { id: templateId };
       else Object.assign(message, { subject, html });
       return message;
@@ -1066,6 +1229,15 @@ async function otpSend(req, env, cors) {
   // 🔴 발송 제한 — 토큰을 새로 받아 5회씩 무한 반복하는 우회를 막는다(10분에 3통).
   const allowed = await otpSendAllowed(env, email);
   if (!allowed.ok) return json({ ok: false, error: "too_many_requests", message: "인증 코드를 너무 자주 요청했어요. 잠시 후 다시 시도해 주세요." }, 429, cors);
+  // 🔴 보내기 전에 "이 주소로 메일이 나갈 수 있나"를 먼저 묻는다(2026-08-18). 못 나가면 거짓 성공 대신 원인을 알린다.
+  if (await isEmailSuppressed(env, email)) {
+    await notifySuppressedAttempt(env, email);
+    return json({
+      ok: false,
+      error: "suppressed",
+      message: "이 이메일 주소로는 저희 메일이 전달되지 않고 있어요. 다른 이메일로 로그인하시거나, 카카오 채널로 알려주시면 저희가 직접 연결해 드려요.",
+    }, 422, cors);
+  }
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
   const exp = Date.now() + OTP_TTL_MS;
   const sig = await hmacHex(env.OTP_SECRET, `code:${email}:${code}:${exp}`);
@@ -1659,6 +1831,12 @@ export default {
     if (path === "/api/account/delete") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return accountDelete(req, env, cors);
+    }
+
+    // Resend 반송·스팸신고 웹훅 — Resend 서버가 직접 호출(브라우저 아님). Svix 서명으로만 인증.
+    if (path === "/api/hooks/resend") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return resendWebhook(req, env, cors);
     }
 
     // 이메일 인증 OTP (회원가입) — 플래그 없이 항상 열림. RESEND_API_KEY·OTP_SECRET 시크릿 필요.
