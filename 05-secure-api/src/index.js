@@ -60,6 +60,80 @@ async function requireAdmin(req, env) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   return verifyAdminToken(env, token); // email or null
 }
+// ─────────────────────────────────────────────────────────────
+// 셀프 회원 탈퇴 (운영자 승인 2026-08-18) — 접수형(카카오 문의)에서 셀프로 승격.
+//   설계 원칙: **개인정보는 파기, 거래 기록은 익명 보존.**
+//     · users 행을 지우지 않고 익명화한다 — 포인트 원장·인증 기록이 user_id로 물려 있어
+//       하드 DELETE하면 정산·통계 무결성이 깨지고, 전자상거래법상 거래기록 보존(5년)도 못 지킨다.
+//     · 식별 정보(이메일·닉네임·연락처·소개·사진·SNS·지역·진단결과)는 그 자리에서 제거한다.
+//     · Supabase Auth 계정은 삭제 → 재로그인 불가(탈퇴의 실질).
+//   ⚠️ 되돌릴 수 없다. 프론트가 확인 문구 입력을 받은 뒤에만 호출한다.
+async function accountDelete(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "unauthorized" }, 401, cors);
+
+  const body = await req.json().catch(() => ({}));
+  // 오호출 방지 — 프론트 확인 단계를 통과했다는 명시 신호를 요구한다.
+  if (body?.confirm !== "DELETE") return json({ ok: false, error: "confirm_required" }, 400, cors);
+
+  const sb = (path, init) => fetch(`${env.SUPABASE_URL}${path}`, {
+    ...init,
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
+  });
+
+  const email = String(user.email || "").toLowerCase();
+  const stamp = new Date().toISOString();
+  // 익명 이메일 — users.email이 NOT NULL·UNIQUE라 값이 필요하다. .invalid는 예약 TLD(실제 발송 불가).
+  const anonEmail = `deleted+${user.id}@literstella.invalid`;
+
+  // 1) users 익명화 (auth_uid 우선, 없으면 이메일로 매칭 — 소셜 가입자는 auth_uid가 정본)
+  const patch = {
+    email: anonEmail, nickname: "탈퇴한 회원",
+    phone: null, bio: null, avatar_url: null, blog_url: null, instagram_url: null,
+    naver_id: null, country: null, city: null, diag_full_result: null,
+    auth_uid: null, marketing_consent: false, deleted_at: stamp,
+  };
+  let r = await sb(`/rest/v1/users?auth_uid=eq.${user.id}`, {
+    method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch),
+  });
+  let rows = r.ok ? await r.json().catch(() => []) : [];
+  if (!rows.length && email) {
+    r = await sb(`/rest/v1/users?email=eq.${encodeURIComponent(email)}`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch),
+    });
+    rows = r.ok ? await r.json().catch(() => []) : [];
+  }
+  if (!r.ok) {
+    const detail = await r.text().catch(() => "");
+    return json({ ok: false, error: "profile_anonymize_failed", detail: detail.slice(0, 200) }, 500, cors);
+  }
+
+  // 2) 개인 식별 정보가 이메일 자체인 부수 테이블 정리 — 남기면 이메일이 계속 저장된 상태가 된다.
+  //    (수강권도 함께 사라진다. 프론트가 이 사실을 명시적으로 고지한 뒤 호출한다.)
+  if (email) {
+    const q = `eq.${encodeURIComponent(email)}`;
+    await Promise.all([
+      sb(`/rest/v1/class_verifications?email=${q}`, { method: "DELETE" }).catch(() => null),
+      sb(`/rest/v1/sentence_subscribers?email=${q}`, { method: "DELETE" }).catch(() => null),
+      sb(`/rest/v1/lecture_subscribers?email=${q}`, { method: "DELETE" }).catch(() => null),
+    ]);
+  }
+
+  // 3) Auth 계정 삭제 — 재로그인 불가(탈퇴의 실질). 실패해도 위 익명화는 이미 끝났다.
+  const authDel = await sb(`/auth/v1/admin/users/${user.id}`, { method: "DELETE" }).catch(() => null);
+
+  return json({
+    ok: true,
+    anonymized: rows.length || 0,
+    authDeleted: !!(authDel && authDel.ok),
+  }, 200, cors);
+}
+
 // 사용자 인증: 프론트가 보낸 Supabase access token(X-User-Token)을 서버에서 검증 → {id,email,metadata} or null.
 // 결제 라우트는 토큰의 검증 user_id만 신뢰(클라가 보낸 userId/email 신뢰 금지 — 타인 빌링키 청구 차단).
 async function requireUser(req, env) {
@@ -1580,6 +1654,12 @@ export default {
       payment: env.PAYMENT_ENABLED === "true",
       contentPoints: env.CONTENT_POINTS_ENABLED === "true",
     }, 200, cors);
+
+    // 셀프 회원 탈퇴 — 로그인 JWT 필수 + confirm:"DELETE" 명시 신호.
+    if (path === "/api/account/delete") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return accountDelete(req, env, cors);
+    }
 
     // 이메일 인증 OTP (회원가입) — 플래그 없이 항상 열림. RESEND_API_KEY·OTP_SECRET 시크릿 필요.
     if (path === "/api/auth/otp/send" || path === "/api/auth/otp/verify") {
