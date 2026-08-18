@@ -741,6 +741,34 @@ async function isEmailSuppressed(env, email) {
   }
 }
 
+// 차단 자동 회복 — "살아있는데 차단만 된" 주소를 시스템이 스스로 구제한다(2026-08-18).
+//   🔴 근거: 7/24 차단분은 죽은 주소가 아니라 대량 발송이 통째로 거부되며 휩쓸린 정상 주소다
+//      (표본 36개 중 18개가 유료 수강생·2개는 과거 그 주소로 OTP 성공 이력). 차단만 풀면 메일이 간다.
+//   안전장치 3겹 — 없으면 진짜 죽은 주소에 반복 발송해 도메인 평판을 깎는다:
+//     ① 우리가 반송을 '관측한' 주소는 풀지 않는다(웹훅 기록이 곧 증거).
+//     ② 주소당 1회만 — 풀어봤는데 또 차단됐다면 그건 진짜 문제 주소다.
+//     ③ 조회 실패 시 풀지 않는다(모르면 건드리지 않는다).
+//   해제 후 또 반송되면 Resend가 다시 차단하고 웹훅이 기록 → 다음부터 ①에 걸려 자동 중단.
+async function tryAutoUnsuppress(env, email) {
+  if (!env.RESEND_API_KEY) return false;
+  try {                                                   // ① 관측된 반송 이력(90일)
+    const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
+    const r = await sbFetch(env, `email_bounces?email=eq.${encodeURIComponent(email)}&occurred_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
+    if (!r.ok) return false;
+    if ((await r.json()).length) return false;
+  } catch { return false; }                               // ③ 모르면 건드리지 않는다
+  if (env.OTP_GUARD && await env.OTP_GUARD.get(`auto-unsup:${email}`)) return false;   // ② 주소당 1회
+  try {
+    const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    });
+    console.log(JSON.stringify({ evt: "auto_unsuppress", ok: r.ok, status: r.status }));
+    if (!r.ok) return false;
+    if (env.OTP_GUARD) await env.OTP_GUARD.put(`auto-unsup:${email}`, "1", { expirationTtl: 90 * 86400 });
+    return true;
+  } catch { return false; }
+}
+
 // 차단 주소가 인증 코드를 시도했다 = 고객이 지금 로그인을 못 하고 있다는 신호 → 운영자에게 알린다.
 //   같은 주소로 하루 1통만(반복 시도 9회에 9통 가는 것 방지 — KV 없으면 알림을 건너뛴다).
 async function notifySuppressedAttempt(env, email) {
@@ -1231,12 +1259,16 @@ async function otpSend(req, env, cors) {
   if (!allowed.ok) return json({ ok: false, error: "too_many_requests", message: "인증 코드를 너무 자주 요청했어요. 잠시 후 다시 시도해 주세요." }, 429, cors);
   // 🔴 보내기 전에 "이 주소로 메일이 나갈 수 있나"를 먼저 묻는다(2026-08-18). 못 나가면 거짓 성공 대신 원인을 알린다.
   if (await isEmailSuppressed(env, email)) {
-    await notifySuppressedAttempt(env, email);
-    return json({
-      ok: false,
-      error: "suppressed",
-      message: "이 이메일 주소로는 저희 메일이 전달되지 않고 있어요. 다른 이메일로 로그인하시거나, 카카오 채널로 알려주시면 저희가 직접 연결해 드려요.",
-    }, 422, cors);
+    // 먼저 스스로 풀어본다 — 7/24 사고분은 대부분 여기서 조용히 해결돼 사용자는 아무것도 눈치채지 못한다.
+    const recovered = await tryAutoUnsuppress(env, email);
+    if (!recovered) {
+      await notifySuppressedAttempt(env, email);
+      return json({
+        ok: false,
+        error: "suppressed",
+        message: "이 이메일 주소로는 저희 메일이 전달되지 않고 있어요. 다른 이메일로 로그인하시거나, 카카오 채널로 알려주시면 저희가 직접 연결해 드려요.",
+      }, 422, cors);
+    }
   }
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
   const exp = Date.now() + OTP_TTL_MS;
