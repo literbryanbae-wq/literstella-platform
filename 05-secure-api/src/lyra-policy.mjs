@@ -1,7 +1,7 @@
 // Server mirror of packages/core/data/lyra-policy.mjs.
 // Keep LYRA_POLICY_VERSION aligned with the shared policy.
 
-export const LYRA_POLICY_VERSION = '2026-07-31-v1';
+export const LYRA_POLICY_VERSION = '2026-08-18-v2';
 
 export const LYRA_POINT_LEVELS = Object.freeze([
   Object.freeze({ key: 'helper', label: 'Helper', minPoints: 0, nextPoints: 500 }),
