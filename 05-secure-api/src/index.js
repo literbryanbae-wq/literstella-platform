@@ -143,10 +143,15 @@ async function requireUser(req, env) {
     const r = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${tok}` } });
     if (!r.ok) return null;
     const u = await r.json().catch(() => null);
+    // provider·이메일확인 = 소셜 자동 연결 판정용(2026-08-22). 기존 호출부는 id·email·metadata만 쓰므로 필드 추가는 무해.
+    const am = u.app_metadata && typeof u.app_metadata === "object" ? u.app_metadata : {};
+    const provs = Array.isArray(am.providers) ? am.providers : (am.provider ? [am.provider] : []);
     return u && u.id ? {
       id: u.id,
       email: String(u.email || "").toLowerCase(),
       metadata: u.user_metadata && typeof u.user_metadata === "object" ? u.user_metadata : {},
+      providers: provs,
+      emailConfirmed: !!u.email_confirmed_at,
     } : null;
   } catch { return null; }
 }
@@ -1718,6 +1723,41 @@ async function classLinkMatch(env, { loginEmail, claimedEmail, name, phone }) {
   return { type: "none" };
 }
 
+// POST /api/class/auto-link — 소셜 로그인 사용자의 수강권 자동 연결 (JWT 필수, 2026-08-22 신설)
+//   🔴 왜: 이메일/비번 가입은 **가입 OTP 통과 직후** 같은 코드로 명단 대조가 돌아 이미 자동 연결된다
+//      (LoginModal "이중 OTP 제거" 배선). 그런데 **소셜 로그인엔 그 경로가 없다** — OTP 코드가
+//      아예 없으니 붙일 자리가 없었다. 그래서 구글·카카오 사용자(계정 1,094개 중 635개 = 58%)만
+//      게이트에서 인증 코드를 한 번 더 요구받았고, 실제 CS 가 반복됐다
+//      (2026-08-22 happyneul@gmail.com — 명단·이메일 완전 일치인데 "진행이 되지 않습니다").
+//   안전한 이유: OTP 가 증명하려는 것은 "이 메일함의 주인인가" 하나다. 소셜 로그인은 **구글·카카오가
+//      이미 그것을 증명**했고(JWT 는 그 계정으로 실제 로그인한 사람만 가진다), 우리는 그 위에
+//      명단 이메일 일치까지 확인한다. 우회가 아니라 **같은 증명을 두 번 요구하던 것을 없애는 것**이다.
+//   🔴 이메일/비번 계정은 이 경로를 쓰지 않는다 — Supabase Confirm 이 OFF 라 email_confirmed_at 이
+//      가입 즉시 채워질 수 있어 "확인됨"이 소유 증명이 아니다. 그쪽은 기존 OTP 경로를 그대로 둔다.
+async function classAutoLink(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const social = user.providers.some((p) => p === "google" || p === "kakao" || p === "naver");
+  if (!social) return json({ ok: true, linked: [], reason: "not_social" }, 200, cors);
+  const email = normEmail(user.email);
+  if (!email) return json({ ok: true, linked: [], reason: "no_email" }, 200, cors);
+  try {
+    const r = await sbFetch(env, `class_enrollments?email=eq.${encodeURIComponent(email)}&select=book_code`);
+    if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+    const books = [...new Set((await r.json()).map((x) => x.book_code).filter(Boolean))];
+    if (!books.length) return json({ ok: true, linked: [], reason: "not_enrolled" }, 200, cors);
+    // 이미 있으면 무시 — 중복 호출(로그인마다)해도 한 벌만 남는다.
+    const ins = await sbFetch(env, "class_verifications?on_conflict=email,book_code", {
+      method: "POST",
+      headers: { Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify(books.map((b) => ({ email, book_code: b, enrollment_email: email }))),
+    });
+    if (!ins.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+    console.log(JSON.stringify({ evt: "class_auto_link", uid: user.id, books: books.length, provider: user.providers[0] || "?" }));
+    return json({ ok: true, linked: books }, 200, cors);
+  } catch { return json({ ok: false, error: "upstream" }, 502, cors); }
+}
+
 // POST /api/class/link-precheck — 신청 폼 전 분기 판정 (JWT 필수)
 async function classLinkPrecheck(req, env, cors) {
   const user = await requireUser(req, env);
@@ -1891,6 +1931,12 @@ export default {
     }
 
     // 8/1 이후 LiveKlass 신청자 수강 연결 신청 (수동 검토 — task-20260817-1650)
+    // 소셜 로그인 자동 연결 — 로그인 직후 1회 호출(멱등). 실패해도 기존 OTP 경로가 그대로 폴백.
+    if (path === "/api/class/auto-link") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return classAutoLink(req, env, cors);
+    }
+
     if (path === "/api/class/link-precheck") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return classLinkPrecheck(req, env, cors);
