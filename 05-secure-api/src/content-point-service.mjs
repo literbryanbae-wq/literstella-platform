@@ -270,7 +270,7 @@ async function buildItemQuote({
     book,
     episodeNo,
     ownedCount: ownership.level.count,
-    isStella: completion.completedCount === 7,
+    isStella: completion.completedCount === 7 || !!completion.inviteStella,
     ...flagsFor(entitlements, book, episodeNo),
   });
   if (quote.access === 'points') {
@@ -308,7 +308,7 @@ async function buildBundleQuote({
     ...quoteRemainingBundle({
       items,
       ownedCount: ownership.level.count,
-      isStella: completion.completedCount === 7,
+      isStella: completion.completedCount === 7 || !!completion.inviteStella,
     }),
     book,
     userId: pointUser.id,
@@ -390,40 +390,61 @@ function publicQuote(quote, balance) {
   };
 }
 
+// 활성 초대권은 '완독 7종'과 같은 자격을 준다(운영자 확정 프로모 — 옵트인 마감 2026-08-31,
+// 유효 2027-02-28). 기록만 하고 아무것도 안 열던 것을 여기서 실제 판정에 얹는다.
+//   ⚠️ 완독 '수치'는 건드리지 않는다 — 완독 권수는 사실이고, 초대권은 자격만 준다.
+//   그래야 화면이 "2권 완독"을 정직하게 보여주면서 스텔라 기능은 열 수 있다.
+function applyInvite(completion, invite) {
+  if (!invite?.activated) return completion;
+  return { ...completion, known: true, inviteStella: true };
+}
+
 async function buildContext(env, sbFetch, authUser, book) {
   const pointUser = await resolvePointUser(env, sbFetch, authUser);
   if (!pointUser) return { error: 'profile_missing' };
-  const [ownership, entitlements, balance, completion] = await Promise.all([
+  const [ownership, entitlements, balance, completion, invite] = await Promise.all([
     fetchOwnership(env, sbFetch, authUser.email),
     fetchEntitlements(env, sbFetch, pointUser.id, book),
     fetchBalance(env, sbFetch, pointUser.id),
     fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
+    fetchStellaInvite(env, sbFetch, pointUser.id).catch(() => ({ activated: false })),
   ]);
   return {
     pointUser,
     ownership,
     entitlements,
     balance,
-    completion: completionWithOwnershipKnowledge(completion, ownership),
+    invite,
+    completion: applyInvite(completionWithOwnershipKnowledge(completion, ownership), invite),
   };
 }
 
 async function buildMemberProgress(env, sbFetch, authUser) {
   const pointUser = await resolvePointUser(env, sbFetch, authUser);
   if (!pointUser) return { error: 'profile_missing' };
-  const [points, ownership, completion] = await Promise.all([
+  const [points, ownership, completion, invite] = await Promise.all([
     fetchPointProgress(env, sbFetch, pointUser.id),
     fetchOwnership(env, sbFetch, authUser.email),
     fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
+    fetchStellaInvite(env, sbFetch, pointUser.id).catch(() => ({ activated: false })),
   ]);
-  const resolvedCompletion = completionWithOwnershipKnowledge(completion, ownership);
+  const resolvedCompletion = applyInvite(
+    completionWithOwnershipKnowledge(completion, ownership), invite,
+  );
+  const progress = resolveLyraProgress({
+    cumulativeEarnedPoints: points.cumulativeEarnedPoints,
+    classicCompletedCount: resolvedCompletion.completedCount,
+    completionKnown: resolvedCompletion.known,
+  });
+  // 초대권으로 열린 경우: 모드는 스텔라로 올리되 완독 수치는 사실 그대로 둔다.
+  //   화면이 "N권 완독"과 "스텔라 이용 중"을 동시에 정직하게 보여줄 수 있다.
+  const inviteStella = !!resolvedCompletion.inviteStella;
   return {
     ...points,
-    ...resolveLyraProgress({
-      cumulativeEarnedPoints: points.cumulativeEarnedPoints,
-      classicCompletedCount: resolvedCompletion.completedCount,
-      completionKnown: resolvedCompletion.known,
-    }),
+    ...progress,
+    ...(inviteStella && !progress.stellaUnlocked
+      ? { effectiveMode: 'stella', stellaUnlocked: true, viaInvite: true, inviteExpiresAt: invite?.expiresAt || null }
+      : {}),
   };
 }
 
@@ -660,7 +681,7 @@ export async function contentPointRoute(req, env, cors, sub, {
           classicCompletedCount: context.completion.completedCount,
           completionKnown: context.completion.known,
         }).realization,
-        stellaUnlocked: context.completion.completedCount === 7,
+        stellaUnlocked: context.completion.completedCount === 7 || !!context.completion.inviteStella,
       }, 200, cors);
     }
 
