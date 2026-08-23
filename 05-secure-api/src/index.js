@@ -1034,7 +1034,9 @@ async function runMigrationNoticeCampaign(env) {
       CONNECTION_URL: "https://class-new.literstella.co.kr/verify?utm_source=resend&utm_medium=email&utm_campaign=lifetime_course_migration_2608",
       STABILIZATION_DATE: "2026년 8월 31일",
       SUPPORT_URL: "http://pf.kakao.com/_xkxdZxeb/chat",
-      PRIVACY_URL: "https://read.literstella.co.kr/privacy",
+      // 🔴 2026-08-23 정정: read.literstella.co.kr/privacy 는 실재하지 않는다(진단앱 SPA 폴백 →
+      //    200을 주지만 진단 랜딩 홈이 뜬다). 발송 메일의 개인정보처리방침 링크가 죽어 있었다.
+      PRIVACY_URL: "https://challenge.literstella.co.kr/privacy",
     }),
     "migration-20260801-0800",
   );
