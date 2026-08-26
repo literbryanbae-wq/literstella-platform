@@ -708,7 +708,13 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
         headers,
         body: JSON.stringify({ from, to: [to], subject, html }),
       });
-      if (r.ok) return true;
+      if (r.ok) {
+        // 발송 ID 를 돌려준다(2026-08-26, 카페 이관 감사 요구). 문자열은 truthy 라
+        // 기존 14곳의 boolean 검사(if (sent) / if (!sent))는 그대로 동작한다.
+        // 🔴 sent === true 강비교만 금지 — 전수 확인 결과 그런 호출부는 없다.
+        const d = await r.json().catch(() => null);
+        return (d && d.id) ? String(d.id) : true;
+      }
       const retryable = r.status === 429 || r.status >= 500;
       let detail = "";
       try { detail = (await r.text()).slice(0, 160); } catch { /* noop */ }
@@ -1721,6 +1727,32 @@ async function classLinkMatch(env, { loginEmail, claimedEmail, name, phone }) {
         if (er.ok && (await er.json()).length) return { type: "candidate", masked: maskEmailAddr(em) };
       }
     }
+    // ③-b 구 클래스(LiveKlass) 연락처 원장 — 전화 정확 일치 (2026-08-26 운영자 지시).
+    //   users.phone 은 20명뿐이라 위 ③이 사실상 죽어 있었다. LiveKlass 수출 명단(7,627행,
+    //   전화 커버리지 ~99%)을 class_roster_contacts 로 적재해 "핸드폰으로 옛 수강 찾기"를 살린다.
+    //   전화만으로도 후보를 돌려주되(가족 공유 번호 가능성) **마스킹된 이메일만** 노출하고,
+    //   연결 자체는 종전대로 OTP 증명 또는 관리자 수동 승인 경유다 — 여기서 grant 하지 않는다.
+    const cr = await sbFetch(env, `class_roster_contacts?phone_norm=eq.${encodeURIComponent(ph)}&select=email,book_code,buyer_name&limit=30`);
+    if (cr.ok) {
+      const rows = await cr.json();
+      // 이름이 있으면 이름 일치 행을 우선(가족 공유 번호 구분), 없으면 전화 단독
+      const named = rows.filter((x) => nm && String(x.buyer_name || "").trim() === nm);
+      const pick = (named.length ? named : rows);
+      const byEmail = {};
+      for (const x of pick) {
+        const em = normEmail(x.email);
+        if (!em || emails.includes(em)) continue;
+        (byEmail[em] = byEmail[em] || []).push(x.book_code);
+      }
+      const found = Object.entries(byEmail);
+      if (found.length) {
+        return {
+          type: "candidate",
+          masked: maskEmailAddr(found[0][0]),
+          rosterMatch: found.map(([em, books]) => ({ masked: maskEmailAddr(em), books: [...new Set(books)], nameMatched: named.length > 0 })),
+        };
+      }
+    }
   }
   return { type: "none" };
 }
@@ -1840,6 +1872,271 @@ async function meOverview(req, env, cors) {
   return json({ ok: true, email, diag, challenge, points, classes, partner }, 200, cors);
 }
 
+// ── 네이버 카페 수강권 이관 (핸드오프 2026-08-26 · UI = 07-class codex/cafe-transfer) ──────
+//   비공개 카페(키다리·앤·작은아씨들)의 구 수강생이 카페 별명+네이버 ID 로 신청하면,
+//   운영자가 명단(cafe_rosters, 비공개 402명)과 대조해 승인한다. book_code 는 클라이언트를
+//   신뢰하지 않는다 — campaign → 부여 강좌 매핑은 여기 상수가 정본이다.
+//   자동 승인 없음: 명단 대조 결과(roster_match)는 참고 신호이고 승인 버튼은 사람이 누른다.
+const CAFE_CAMPAIGN_GRANTS = {
+  anne: ["anne"],
+  littlewomen: ["littlewomen1", "littlewomen2"],   // 한 번 승인 = PART 1·2 함께 (운영자 확정)
+  kidari: ["kidari"],
+};
+function maskNaverId(id) {
+  const v = String(id || "");
+  return v.length <= 3 ? v[0] + "**" : v.slice(0, 3) + "*".repeat(Math.min(v.length - 3, 8));
+}
+// NFKC + trim + casefold — 명단 적재와 같은 정규화(다르면 대조가 조용히 어긋난다)
+function cafeNorm(sv) { return String(sv || "").normalize("NFKC").trim().toLowerCase(); }
+
+// 회원 통지 — 정보성 1회. 발송 전 차단목록 3단(7/24 사고 재발 방지), 발송 ID 를 행에 감사.
+async function cafeNotifyMember(env, reqRow, kind) {
+  const email = reqRow.login_email;
+  const T = {
+    received: ["[리터스텔라] 카페 수강 연결 신청이 접수됐어요", "<p>카페 수강 명단과 입력해 주신 정보를 확인한 뒤 알려드릴게요.</p><p>확인은 보통 1~2일 안에 끝나요.</p>"],
+    approved: ["[리터스텔라] 수강 연결이 완료됐어요", `<p>신청하신 수업이 지금 로그인하시는 계정에 연결됐어요.</p><p><a href="https://class-new.literstella.co.kr/library">내 수업에서 바로 확인하기 →</a></p>`],
+    needinfo: ["[리터스텔라] 수강 연결에 추가 확인이 필요해요", `<p>입력해 주신 정보만으로는 명단에서 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>신청 화면에서 내용을 보완해 다시 제출해 주세요.</p>`],
+    rejected: ["[리터스텔라] 수강 연결을 확인하지 못했어요", `<p>카페 수강 명단에서 신청 정보를 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>착오가 있다고 생각되시면 카카오 채널로 알려주세요 — 직접 확인해 드려요.</p>`],
+  }[kind];
+  if (!T) return null;
+  if (await isEmailSuppressed(env, email)) {
+    const recovered = await tryAutoUnsuppress(env, email);
+    if (!recovered) { await notifySuppressedAttempt(env, email); return "suppressed"; }
+  }
+  const sent = await sendResendEmail(env, {
+    to: email,
+    subject: T[0],   // "수강 연결" 포함 → TX_SUBJECT_RE 에 걸려 반송 즉시 알림 대상
+    html: brandEmailHtml(T[1]),
+    idempotencyKey: `cafetr:${reqRow.id}:${kind}`,
+  });
+  return typeof sent === "string" ? sent : (sent ? "sent" : null);
+}
+
+// POST /api/class/cafe-transfer/request {campaign, cafeNickname, naverId, consentVersion}
+async function cafeTransferRequest(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const campaign = String(b.campaign || "").trim();
+  if (!CAFE_CAMPAIGN_GRANTS[campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+  const cafeNickname = String(b.cafeNickname || "").trim().slice(0, 40);
+  const naverId = String(b.naverId || "").trim().toLowerCase();
+  const consentVersion = String(b.consentVersion || "").trim().slice(0, 20);
+  if (!cafeNickname || !/^[a-z0-9._-]{3,40}$/.test(naverId) || !consentVersion) {
+    return json({ ok: false, error: "bad_request" }, 400, cors);
+  }
+  // 활성 신청 멱등 — 부분 유니크(auth_uid, campaign WHERE pending/needinfo)가 DB 에서도 잡는다
+  const openR = await sbFetch(env, `cafe_transfer_requests?auth_uid=eq.${user.id}&campaign=eq.${campaign}&status=in.(pending,needinfo)&select=id,status&limit=1`);
+  if (!openR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const open = (await openR.json())[0];
+  // 명단 자동 대조 — 정확 별명 + 입력 전체 ID 가 접두부로 시작(핸드오프 규칙). 접두부만 일치는 후보 아님.
+  let rosterMatch = "none";
+  try {
+    const rr = await sbFetch(env, `cafe_rosters?campaign=eq.${campaign}&nickname_norm=eq.${encodeURIComponent(cafeNorm(cafeNickname))}&select=id_prefix&limit=5`);
+    if (rr.ok) {
+      for (const row of await rr.json()) {
+        if (naverId.startsWith(String(row.id_prefix || "").toLowerCase())) { rosterMatch = "exact"; break; }
+      }
+    }
+  } catch { /* 대조 실패 = none 으로 접수 — 승인은 사람이 하므로 안전 */ }
+  const payload = {
+    login_email: user.email, campaign, cafe_nickname: cafeNickname, naver_id: naverId,
+    consent_version: consentVersion, roster_match: rosterMatch, updated_at: new Date().toISOString(),
+  };
+  let row;
+  if (open && open.status === "needinfo") {
+    const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${open.id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...payload, status: "pending" }) });
+    if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+    row = (await up.json())[0];
+  } else if (open) {
+    return json({ ok: true, already: true, request: { status: open.status, campaign } }, 200, cors);
+  } else {
+    const ins = await sbFetch(env, `cafe_transfer_requests`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ auth_uid: user.id, consent_at: new Date().toISOString(), ...payload }) });
+    if (ins.status === 409) return json({ ok: true, already: true, request: { status: "pending", campaign } }, 200, cors);
+    if (!ins.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+    row = (await ins.json())[0];
+  }
+  // 통지 2건 — 실패해도 접수는 성립(비차단). 발송 ID 는 행에 감사.
+  const audit = {};
+  try { const mid = await cafeNotifyMember(env, row, "received"); if (mid) audit.member_email_id = mid; } catch { /* 비차단 */ }
+  try {
+    if (env.ADMIN_EMAIL) {
+      const rid = String(row.id).slice(0, 8);
+      const aid = await sendResendEmail(env, {
+        to: env.ADMIN_EMAIL,
+        subject: `[카페 수강 연결] ${campaign} · ${rid} · 명단 ${rosterMatch === "exact" ? "일치" : "불일치"}`,
+        html: `<p>네이버 카페 수강 이관 신청이 접수됐어요.</p>
+<ul><li>요청: <b>${rid}</b> · 강좌: <b>${campaign}</b></li><li>로그인: ${maskEmailAddr(user.email)}</li><li>카페 별명: <b>${escHtml(cafeNickname)}</b> · 네이버 ID: ${maskNaverId(naverId)}</li><li>명단 자동 대조: <b>${rosterMatch === "exact" ? "✅ 정확 일치" : "❌ 일치 없음"}</b></li></ul>
+<p><a href="https://class-new.literstella.co.kr/admin">관리자 → 카페 이관 탭에서 검토 →</a></p>`,
+        idempotencyKey: `cafetr:${row.id}:admin`,
+      });
+      if (typeof aid === "string") audit.admin_email_id = aid;
+    }
+  } catch { /* 비차단 */ }
+  if (Object.keys(audit).length) {
+    try { await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(audit) }); } catch { /* 감사 기록 실패는 비차단 */ }
+  }
+  console.log(JSON.stringify({ evt: "cafe_transfer_request", id: String(row.id).slice(0, 8), campaign, match: rosterMatch }));
+  return json({ ok: true, request: { status: row.status, campaign, adminNote: null } }, 200, cors);
+}
+
+// GET /api/class/cafe-transfer/mine?campaign=
+async function cafeTransferMine(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const campaign = String(new URL(req.url).searchParams.get("campaign") || "").trim();
+  if (!CAFE_CAMPAIGN_GRANTS[campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+  const r = await sbFetch(env, `cafe_transfer_requests?auth_uid=eq.${user.id}&campaign=eq.${campaign}&select=status,admin_note,updated_at&order=created_at.desc&limit=1`);
+  if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const row = (await r.json())[0];
+  if (!row) return json({ ok: true, request: null }, 200, cors);
+  // adminNote 는 보완/거절일 때만 회원에게 (형제 구현과 동일 정책 — approved 안내문 오염 방지)
+  const showNote = row.status === "needinfo" || row.status === "rejected";
+  return json({ ok: true, request: { status: row.status, campaign, adminNote: showNote ? (row.admin_note || null) : null } }, 200, cors);
+}
+
+// GET /api/admin/cafe-transfer-requests?status=&campaign=
+async function adminCafeTransferList(req, env, cors) {
+  if (!(await requireAdminUser(req, env))) return json({ ok: false, error: "not_admin" }, 403, cors);
+  const url = new URL(req.url);
+  const st = String(url.searchParams.get("status") || "").trim();
+  const camp = String(url.searchParams.get("campaign") || "").trim();
+  const f = [];
+  if (["pending", "needinfo", "approved", "rejected"].includes(st)) f.push(`status=eq.${st}`);
+  if (CAFE_CAMPAIGN_GRANTS[camp]) f.push(`campaign=eq.${camp}`);
+  const r = await sbFetch(env, `cafe_transfer_requests?select=id,campaign,status,created_at,login_email,cafe_nickname,naver_id,roster_match,admin_note,granted_books${f.length ? "&" + f.join("&") : ""}&order=created_at.desc&limit=100`);
+  if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const rows = (await r.json()).map((x) => ({
+    id: x.id, campaign: x.campaign, status: x.status, created_at: x.created_at,
+    login_email: x.login_email, cafe_nickname: x.cafe_nickname,
+    naver_id_masked: `${maskNaverId(x.naver_id)}${x.roster_match === "exact" ? " · 명단일치✅" : " · 명단불일치❌"}`,
+    admin_note: x.admin_note, granted_books: x.granted_books,
+  }));
+  return json({ ok: true, requests: rows }, 200, cors);
+}
+
+// POST /api/admin/cafe-transfer-request/decide {id, action:'approve'|'needinfo'|'reject', adminNote}
+async function adminCafeTransferDecide(req, env, cors) {
+  const admin = await requireAdminUser(req, env);
+  if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
+  let body; try { body = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const id = String(body.id || "").trim();
+  const action = String(body.action || "").trim();
+  const adminNote = String(body.adminNote || "").trim().slice(0, 500);   // 🔴 형제(class-link)는 'note' — 여기만 adminNote
+  if (!id || !["approve", "needinfo", "reject"].includes(action)) return json({ ok: false, error: "bad_request" }, 400, cors);
+  const rowR = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}&select=*&limit=1`);
+  if (!rowR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const row = (await rowR.json())[0];
+  if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
+  let grantedBooks = null;
+  if (action === "approve") {
+    const codes = CAFE_CAMPAIGN_GRANTS[row.campaign] || [];   // 🔴 서버 매핑이 정본 — 브라우저가 강좌를 못 고른다
+    if (!codes.length) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+    // ① 로그인 연결 원장 — enrollment_email 은 NULL: 카페 이관은 증명된 결제 이메일이 없다.
+    //   (enrollment_once 유니크를 소비하면 진짜 구매자의 미래 셀프 연결을 막는다 — 별개 원장 원칙)
+    const ins = await sbFetch(env, `class_verifications?on_conflict=email,book_code`, {
+      method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(codes.map((c) => ({ email: row.login_email, book_code: c, enrollment_email: null }))),
+    });
+    if (!ins.ok) return json({ ok: false, error: "grant_failed" }, 502, cors);
+    // ② 수강 명단 원장 — source 로 출처 감사(naver-cafe:campaign:요청ID). 재로그인 자동연결도 이 행이 받친다.
+    const ins2 = await sbFetch(env, `class_enrollments?on_conflict=email,book_code`, {
+      method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(codes.map((c) => ({ email: row.login_email, book_code: c, source: `naver-cafe:${row.campaign}:${String(row.id).slice(0, 8)}` }))),
+    });
+    if (!ins2.ok) console.log(JSON.stringify({ evt: "cafe_transfer_enroll_ledger_failed", id: String(row.id).slice(0, 8) }));
+    grantedBooks = codes.join(",");
+  }
+  const status = action === "approve" ? "approved" : action === "needinfo" ? "needinfo" : "rejected";
+  const patch = { status, admin_note: adminNote || null, granted_books: grantedBooks, decided_by: admin.email, decided_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
+  if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+  const updated = (await up.json())[0];
+  try {
+    const mid = await cafeNotifyMember(env, updated, status);
+    if (mid) await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ member_email_id: mid }) });
+  } catch { /* 통지 실패 비차단 — 상태는 관리자 화면·mine 조회로 보인다 */ }
+  console.log(JSON.stringify({ evt: "cafe_transfer_decide", id: id.slice(0, 8), action, by: admin.email, books: grantedBooks || "-" }));
+  return json({ ok: true }, 200, cors);
+}
+
+// ── 백업 이메일 (운영자 지시 2026-08-26) — 아이디·이메일 분실 대비 ─────────────────
+//   원리: 백업 이메일도 **소유 증명 후에만** 등록된다(OTP 6자리를 그 주소로 보내 확인).
+//   증명 없이 등록을 허용하면 남의 계정에 내 백업메일을 심는 탈취 경로가 된다.
+//   저장은 account_recovery(service_role 전용, RLS 정책 0) — users 컬럼은 anon INSERT 가
+//   상속돼 위조 가능해서 쓰지 않는다(2026-08-26 마이그레이션 주석 참조).
+async function backupEmailSendCode(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const backupEmail = String(b.backupEmail || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(backupEmail) || backupEmail.length > 254) return json({ ok: false, error: "bad_email" }, 400, cors);
+  if (backupEmail === user.email) return json({ ok: false, error: "same_as_login", message: "로그인 이메일과 다른 주소를 백업으로 등록해 주세요." }, 400, cors);
+  const allowed = await otpSendAllowed(env, backupEmail);
+  if (!allowed.ok) return json({ ok: false, error: "too_many_requests" }, 429, cors);
+  if (await isEmailSuppressed(env, backupEmail)) {
+    const recovered = await tryAutoUnsuppress(env, backupEmail);
+    if (!recovered) { await notifySuppressedAttempt(env, backupEmail); return json({ ok: false, error: "suppressed", message: "이 주소로는 메일이 전달되지 않아요. 다른 주소를 써 주세요." }, 422, cors); }
+  }
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
+  const exp = Date.now() + OTP_TTL_MS;
+  // 🔴 프리픽스 bkmail: — 일반 OTP(code:)와 서명 공간을 분리해 코드 재사용(수강 인증 등) 차단
+  const sig = await hmacHex(env.OTP_SECRET, `bkmail:${user.id}:${backupEmail}:${code}:${exp}`);
+  const sent = await sendResendEmail(env, {
+    to: backupEmail,
+    subject: "[리터스텔라] 백업 이메일 인증 코드",
+    html: brandEmailHtml(`<div style="font-size:17px;font-weight:800;margin-bottom:10px;">백업 이메일 인증 코드</div><p style="margin:0 0 14px;color:#5a5446;">10분 안에 아래 코드를 입력해 주세요. 이 주소는 계정을 잃었을 때 찾는 용도로만 쓰여요.</p><div style="font-size:32px;font-weight:900;letter-spacing:9px;color:#c8a84b;text-align:center;padding:16px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:13px;">${code}</div>`),
+  });
+  if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
+  return json({ ok: true, token: `${exp}.${sig}` }, 200, cors);
+}
+
+async function backupEmailConfirm(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const backupEmail = String(b.backupEmail || "").trim().toLowerCase();
+  const code = String(b.code || "").trim();
+  const [expStr, sig] = String(b.token || "").split(".");
+  const exp = Number(expStr);
+  if (!EMAIL_RE.test(backupEmail) || !/^\d{6}$/.test(code) || !exp || !sig || Date.now() > exp) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  const guard = await otpGuardConsume(env, b.token);
+  if (guard) return json({ ok: false, ...guard }, 400, cors);
+  const expected = await hmacHex(env.OTP_SECRET, `bkmail:${user.id}:${backupEmail}:${code}:${exp}`);
+  if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  await otpGuardBurn(env, b.token);
+  const up = await sbFetch(env, `account_recovery?on_conflict=auth_uid`, {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify([{ auth_uid: user.id, primary_email: user.email, backup_email: backupEmail, verified_at: new Date().toISOString(), updated_at: new Date().toISOString() }]),
+  });
+  if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+  console.log(JSON.stringify({ evt: "backup_email_set", uid: String(user.id).slice(0, 8) }));
+  return json({ ok: true, backupEmailMasked: maskEmailAddr(backupEmail) }, 200, cors);
+}
+
+// GET /api/me/backup-email — 설정 화면 표시용(마스킹)
+async function backupEmailGet(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const r = await sbFetch(env, `account_recovery?auth_uid=eq.${user.id}&select=backup_email,verified_at&limit=1`);
+  if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const row = (await r.json())[0];
+  return json({ ok: true, backupEmailMasked: row ? maskEmailAddr(row.backup_email) : null, verifiedAt: row?.verified_at || null }, 200, cors);
+}
+
+// POST /api/auth/find-by-backup {backupEmail} — 아이디(로그인 이메일) 찾기. 무인증 공개 라우트.
+//   응답은 마스킹만: 지식 기반(주소를 안다) 단독으론 원문을 안 준다. 열거 방지로 항상 ok.
+async function findByBackupEmail(req, env, cors) {
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const backupEmail = String(b.backupEmail || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(backupEmail)) return json({ ok: false, error: "bad_email" }, 400, cors);
+  const allowed = await otpSendAllowed(env, `findbk:${backupEmail}`);   // 열거 속도 제한(같은 레이트리밋 재사용)
+  if (!allowed.ok) return json({ ok: false, error: "too_many_requests" }, 429, cors);
+  const r = await sbFetch(env, `account_recovery?backup_email=eq.${encodeURIComponent(backupEmail)}&select=primary_email&limit=5`);
+  const rows = r.ok ? await r.json() : [];
+  return json({ ok: true, found: rows.map((x) => maskEmailAddr(x.primary_email)) }, 200, cors);
+}
+
 async function classAutoLink(req, env, cors) {
   const user = await requireUser(req, env);
   if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
@@ -1892,12 +2189,17 @@ async function classLinkRequestSubmit(req, env, cors) {
   try { match = await classLinkMatch(env, { loginEmail: user.email, claimedEmail, name, phone }); }
   catch { return json({ ok: false, error: "upstream" }, 502, cors); }
   if (match.type === "enrolled") return json({ ok: false, error: "already_enrolled", email: match.email }, 200, cors);
-  if (match.type === "candidate") return json({ ok: false, error: "candidate_found", masked: match.masked }, 200, cors);
+  // 🔴 mailUnreachable(2026-08-26): 옛 수강 이메일이 죽어 OTP 메일을 못 받는 사람은
+  //   후보 안내로 돌려보내면 영원히 막힌다(그 이메일로 인증하라는 안내 = 못 하는 일).
+  //   그 경우 접수를 허용하고, 서버 대조 결과(roster_match)를 신청에 실어 관리자가 본다.
+  const mailUnreachable = body.mailUnreachable === true;
+  if (match.type === "candidate" && !mailUnreachable) return json({ ok: false, error: "candidate_found", masked: match.masked }, 200, cors);
   // 열린 신청 1건 원칙(멱등) — needinfo면 보완 재제출로 갱신
   const openR = await sbFetch(env, `class_link_requests?auth_uid=eq.${user.id}&status=in.(pending,needinfo)&select=id,status&limit=1`);
   if (!openR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const open = (await openR.json())[0];
-  const payload = { login_email: user.email, claimed_email: claimedEmail, name, phone, courses, paid_at: paidAt, order_info: orderInfo, updated_at: new Date().toISOString() };
+  const payload = { login_email: user.email, claimed_email: claimedEmail, name, phone, courses, paid_at: paidAt, order_info: orderInfo, updated_at: new Date().toISOString(),
+    roster_match: match.rosterMatch ? { via: "liveklass-phone", unreachable: mailUnreachable, hits: match.rosterMatch } : null };
   let reqId = open?.id || null;
   if (open && open.status === "pending") return json({ ok: true, already: true, id: open.id, status: "pending" }, 200, cors);
   if (open && open.status === "needinfo") {
@@ -2063,6 +2365,39 @@ export default {
     if (path === "/api/admin/class-link-request/decide") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return adminClassLinkDecide(req, env, cors);
+    }
+
+    // ── 카페 수강권 이관 (2026-08-26) — 관리자 GET 이 있어 /api/admin/ prefix 블록(POST 강제) 위에 둔다
+    if (path === "/api/class/cafe-transfer/request") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return cafeTransferRequest(req, env, cors);
+    }
+    if (path === "/api/class/cafe-transfer/mine") {
+      return cafeTransferMine(req, env, cors);
+    }
+    if (path === "/api/admin/cafe-transfer-requests") {
+      return adminCafeTransferList(req, env, cors);
+    }
+    if (path === "/api/admin/cafe-transfer-request/decide") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return adminCafeTransferDecide(req, env, cors);
+    }
+    // ── 백업 이메일 (2026-08-26) ──
+    if (path === "/api/me/backup-email") {
+      if (req.method === "GET") return backupEmailGet(req, env, cors);
+      return json({ ok: false, error: "method" }, 405, cors);
+    }
+    if (path === "/api/me/backup-email/send-code") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return backupEmailSendCode(req, env, cors);
+    }
+    if (path === "/api/me/backup-email/confirm") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return backupEmailConfirm(req, env, cors);
+    }
+    if (path === "/api/auth/find-by-backup") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return findByBackupEmail(req, env, cors);
     }
 
     // 본인인증(통합인증) 결과 조회 — PORTONE_API_SECRET 필요. 플래그 없이 열림(id=unguessable UUID).
