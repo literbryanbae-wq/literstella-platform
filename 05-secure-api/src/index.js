@@ -1759,11 +1759,24 @@ async function meOverview(req, env, cors) {
 
   // ① 진단 — 레벨·타입·AI 리포트 유무 (users 행)
   const diag = await one(async () => {
-    const r = await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}&select=id,nickname,diag_level,diag_type,ai_report&limit=1`);
+    const r = await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}&select=id,nickname,diag_level,diag_type,ai_report,diag_full_result&limit=1`);
     if (!r.ok) return null;
     const u = (await r.json())[0];
     if (!u) return null;
-    return { userId: u.id, nickname: u.nickname || null, level: u.diag_level || null, type: u.diag_type || null, hasAiReport: !!u.ai_report };
+    // 🔴 diag_level 은 '진단을 봤다'는 증거가 아니다(2026-08-26 실측으로 확인).
+    //    users.diag_level 은 NOT NULL 이라 워커 upsert 가 `result.level || 'L1'` 로 항상 채운다.
+    //    그래서 1,215명 전원에게 값이 있지만, 실제 결과(diag_full_result)를 가진 사람은 72명(5.9%)뿐이고
+    //    1,143명은 진단을 본 적 없이 'L1' 만 박혀 있다. 이걸 그대로 카드에 띄우면 **보지도 않은 사람에게
+    //    지어낸 영어 레벨을 통보하는 셈**이라, 아무것도 안 보여 주는 것보다 나쁘다.
+    //    (email_confirmed_at 이 소유 증명이 아니었던 것과 같은 함정 — 산출물이 있다고 사건이 있었던 게 아니다.)
+    //    taken=false 면 화면은 레벨 대신 '진단 하러 가기'를 띄운다 — 퍼널 1순위(가입 94% 무진단)와도 맞는다.
+    const taken = !!u.diag_full_result;
+    return {
+      userId: u.id, nickname: u.nickname || null, taken,
+      level: taken ? (u.diag_level || null) : null,
+      type: taken ? (u.diag_type || null) : null,
+      hasAiReport: !!u.ai_report,
+    };
   });
 
   // ② 챌린지 — 연속 인증일수·이번 시즌 인증 수. userId 가 있어야 조회 가능하다.
