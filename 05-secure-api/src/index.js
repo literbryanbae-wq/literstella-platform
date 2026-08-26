@@ -1171,9 +1171,17 @@ async function fetchResendAudienceEmails(env) {
 }
 // 라이프사이클 정보성 메일 발송. {to, key, data} → renderEmail → {{unsubscribe}} 치환 → Resend.
 async function lifecycleEmail(req, env, cors) {
+  // 🔴 스팸 중계기를 닫는다 (2026-08-27). 이 라우트는 인증이 없어서 누구나 아무 주소로
+  //   리터스텔라 명의 메일(가입 환영·성공 축하·완독 등 14종)을 보낼 수 있었다. 발신 평판이
+  //   훼손되고, 7/24 반송 사고로 이미 계정 단위 차단목록을 겪은 이력이 있다.
+  //   이제 로그인 세션을 요구하고 **본인 주소로만** 허용한다. 호출부는 전부 로그인 이후 지점이라
+  //   정상 흐름에 영향이 없다(클라이언트 토큰 동봉은 챌린지 bf22c39 로 선배포 확인).
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
   let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
   const to = String(b.to || "").trim().toLowerCase();
   const key = String(b.key || "").trim();
+  if (to !== normEmail(user.email)) return json({ ok: false, error: "not_own_address" }, 403, cors);
   if (!EMAIL_RE.test(to) || to.length > 254) return json({ ok: false, error: "bad_email" }, 400, cors);
   if (!LIFECYCLE[key]) return json({ ok: false, error: "bad_key" }, 400, cors);
   const data = (b.data && typeof b.data === "object") ? b.data : {};
