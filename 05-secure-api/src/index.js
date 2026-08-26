@@ -1736,6 +1736,97 @@ async function classLinkMatch(env, { loginEmail, claimedEmail, name, phone }) {
 //      명단 이메일 일치까지 확인한다. 우회가 아니라 **같은 증명을 두 번 요구하던 것을 없애는 것**이다.
 //   🔴 이메일/비번 계정은 이 경로를 쓰지 않는다 — Supabase Confirm 이 OFF 라 email_confirmed_at 이
 //      가입 즉시 채워질 수 있어 "확인됨"이 소유 증명이 아니다. 그쪽은 기존 OTP 경로를 그대로 둔다.
+// ── GET /api/me/overview — 계정 센터 대시보드 "내 리터스텔라" (2026-08-26 P1) ──────────
+//   카드 5장을 위해 API 를 5번 부르지 않는다. 이 하나로 4앱 요약을 모아 준다.
+//
+//   설계 원칙 3가지:
+//   ① **새 테이블 0** — 전부 기존 원장 조회의 조합이다.
+//   ② **표시 전용** — 포인트 잔액·자리 판정 같은 값은 각 정본(포인트·구독 세션)이 소유한다.
+//      여기선 원장을 읽어 보여줄 뿐, 규칙을 새로 만들거나 계산을 흉내 내지 않는다.
+//      (화면이 서버 판정을 흉내 내면 "화면은 열리는데 서버가 막는" 어긋남이 난다 — §3-2 규칙 5)
+//   ③ **카드 단위 실패** — 한 조각이 죽어도 그 키만 null 이고 나머지는 살아 있다.
+//      대시보드 전체가 빈 화면이 되는 것보다, 카드 하나가 조용히 빠지는 편이 낫다(Zero-Error).
+//
+//   인증: X-User-Token(로그인 세션) 필수 — 남의 요약을 볼 길을 만들지 않는다.
+async function meOverview(req, env, cors) {
+  if (req.method !== "GET") return json({ ok: false, error: "method" }, 405, cors);
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const email = normEmail(user.email);
+  if (!email) return json({ ok: false, error: "no_email" }, 400, cors);
+
+  const one = async (fn) => { try { return await fn(); } catch (_e) { return null; } };
+
+  // ① 진단 — 레벨·타입·AI 리포트 유무 (users 행)
+  const diag = await one(async () => {
+    const r = await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}&select=id,nickname,diag_level,diag_type,ai_report&limit=1`);
+    if (!r.ok) return null;
+    const u = (await r.json())[0];
+    if (!u) return null;
+    return { userId: u.id, nickname: u.nickname || null, level: u.diag_level || null, type: u.diag_type || null, hasAiReport: !!u.ai_report };
+  });
+
+  // ② 챌린지 — 연속 인증일수·이번 시즌 인증 수. userId 가 있어야 조회 가능하다.
+  const challenge = diag?.userId ? await one(async () => {
+    const r = await sbFetch(env, `check_ins?user_id=eq.${diag.userId}&select=local_date,season_id&order=local_date.desc&limit=400`);
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const days = [...new Set(rows.map((x) => x.local_date).filter(Boolean))].sort().reverse();
+    // 연속 = 오늘(또는 어제)부터 하루씩 이어지는 날 수. 어제까지 인정해야 "오늘 아직 안 한 사람"의 streak 이 0으로 안 보인다.
+    let streak = 0;
+    if (days.length) {
+      const d0 = new Date(days[0] + "T00:00:00Z");
+      const today = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
+      const gap = Math.round((today - d0) / 86400000);
+      if (gap <= 1) {
+        streak = 1;
+        for (let i = 1; i < days.length; i++) {
+          const a = new Date(days[i - 1] + "T00:00:00Z"), b = new Date(days[i] + "T00:00:00Z");
+          if (Math.round((a - b) / 86400000) === 1) streak++; else break;
+        }
+      }
+    }
+    return { streak, totalDays: days.length };
+  }) : null;
+
+  // ③ 포인트 — 원장 합산만. 🔴 가격·소비 규칙은 포인트 세션 정본이고 여기서 흉내 내지 않는다.
+  const points = diag?.userId ? await one(async () => {
+    const r = await sbFetch(env, `point_transactions?user_id=eq.${diag.userId}&select=amount,created_at`);
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const balance = rows.reduce((a, x) => a + (x.amount || 0), 0);
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const recent = rows.filter((x) => x.created_at > since && (x.amount || 0) > 0).reduce((a, x) => a + x.amount, 0);
+    return { balance, earned30d: recent };
+  }) : null;
+
+  // ④ 강독 — 연결된 수강권(정본 = class_verifications, 로그인 이메일 기준)
+  const classes = await one(async () => {
+    // 🔴 book_code 를 '원서 몇 권'으로 분류하지 않는다 — 그 목록(스텔라 시그니처 8권)의 정본은
+    //    소장·구독 세션이고, 여기 사본을 두면 두 곳이 갈라진다(실제로 초안의 7권 목록이 이미 8권 정본과 어긋났다).
+    //    원장 그대로 코드 배열만 넘기고, 의미 부여는 정본을 아는 쪽에서 한다.
+    const books = await verifiedBooksForLogin(env, email);
+    return { owned: books.length, books };
+  });
+
+  // ⑤ 파트너 — 강독 분석 신청 상태·리포트 링크. 🔴 신청 이력이 있는 사람에게만 값이 있다(대다수는 null).
+  //    지금까지 이 정보를 볼 화면이 없어, 링크를 잃으면 재신청을 시도해야만 복구됐다.
+  const partner = await one(async () => {
+    const r = await sbFetch(env, `partner_applications?or=(email_norm.eq."${email}",email.eq."${email}")&select=status,phase,report_token,report_status,report_score&order=submitted_at.desc&limit=1`);
+    if (!r.ok) return null;
+    const a = (await r.json())[0];
+    if (!a) return null;
+    return {
+      status: a.report_status || a.status || null,
+      score: typeof a.report_score === "number" ? a.report_score : null,
+      phase: a.phase || null,
+      reportUrl: a.report_token ? `https://read.literstella.co.kr/api/partner-report?t=${encodeURIComponent(a.report_token)}` : null,
+    };
+  });
+
+  return json({ ok: true, email, diag, challenge, points, classes, partner }, 200, cors);
+}
+
 async function classAutoLink(req, env, cors) {
   const user = await requireUser(req, env);
   if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
@@ -1934,6 +2025,9 @@ export default {
 
     // 8/1 이후 LiveKlass 신청자 수강 연결 신청 (수동 검토 — task-20260817-1650)
     // 소셜 로그인 자동 연결 — 로그인 직후 1회 호출(멱등). 실패해도 기존 OTP 경로가 그대로 폴백.
+    if (path === "/api/me/overview") {
+      return meOverview(req, env, cors);
+    }
     if (path === "/api/class/auto-link") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return classAutoLink(req, env, cors);
