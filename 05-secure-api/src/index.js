@@ -2883,7 +2883,7 @@ export default {
         env,
         cors,
         path.replace("/api/stella-upgrade/", ""),
-        { json, requireUser, sbFetch, sendEmail: sendResendEmail, brandEmailHtml },
+        { json, requireUser, sbFetch, sendEmail: sendResendEmail, brandEmailHtml, isEmailSuppressed },
       );
     }
 

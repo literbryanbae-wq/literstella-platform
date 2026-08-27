@@ -452,7 +452,7 @@ function completionEmail(row, brandEmailHtml) {
 // 확정: 결제/입금 확인 → 8권 수강권 연결 → 완료 메일 — 관리자 버튼 1회(운영자 확정 2026-08-03).
 //   Lyra 인앱 알림은 클라가 담당(연결 감지 → GrantWelcomeModal + Lyra 인박스) — '이메일 알림 = 라일라 알림' 규칙.
 async function completeRequest(req, env, cors, deps) {
-  const { json, sbFetch, sendEmail, brandEmailHtml } = deps;
+  const { json, sbFetch, sendEmail, brandEmailHtml, isEmailSuppressed } = deps;
   const admin = await requireAdminUser(req, env, deps, cors);
   if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
 
@@ -497,13 +497,32 @@ async function completeRequest(req, env, cors, deps) {
   if (!statusSaved) return json({ ok: false, error: "status_save_failed" }, 502, cors);
 
   // 3) 완료 메일 — 로그인 계정 주소로 1통(라이브클래스 주소가 달라도 실제 접속 계정이 기준)
+  //   🔴 보내기 전에 차단 목록을 본다(2026-08-28). 실제로 이연홍·김수진 님 확정에서 메일만 실패했는데
+  //     화면엔 "실패"만 떠서 원인을 알 수 없었고, 이유는 워커 로그에만 남아 아무도 못 봤다.
+  //     연결(8권)은 이미 끝났으므로 메일 실패로 되돌리지 않고, **무엇이 문제인지 말해 준다**.
+  if (typeof isEmailSuppressed === "function" && await isEmailSuppressed(env, applicant)) {
+    return json({
+      ok: false,
+      error: "email_suppressed",
+      grantDone: true,
+      message: `8권 연결은 끝났습니다. 다만 ${applicant} 는 반송 이력으로 차단 목록에 있어 메일이 나가지 않습니다. 차단을 푼 뒤 이 버튼을 다시 눌러 주세요.`,
+    }, 200, cors);
+  }
   const sent = await sendEmail(env, {
     to: applicant,
     subject: "[리터스텔라] 평생소장 연결 완료 — 스텔라 등급",
     html: completionEmail(row, brandEmailHtml),
     idempotencyKey: `stella-complete/${requestId}`,
   });
-  if (!sent) return json({ ok: false, error: "email_send_failed", grantDone: true }, 502, cors);
+  if (!sent) {
+    console.error(JSON.stringify({ evt: "stella_complete_email_failed", to: applicant, requestId }));
+    return json({
+      ok: false,
+      error: "email_send_failed",
+      grantDone: true,
+      message: "8권 연결은 끝났습니다. 완료 메일만 실패했어요 — 이 버튼을 다시 누르면 메일만 재시도합니다.",
+    }, 502, cors);
+  }
   await patchRequest(env, sbFetch, requestId, { completion_emailed_at: new Date().toISOString() });
 
   return json({ ok: true, granted: ALL_BOOKS.length, emailedTo: applicant }, 200, cors);
