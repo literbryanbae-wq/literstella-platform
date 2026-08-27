@@ -951,6 +951,203 @@ async function fetchAllClassEnrollmentEmails(env) {
   return emails;
 }
 
+// ── 수신거부(원클릭) — RFC 8058 (2026-08-27 신설) ─────────────────────────────
+//   🔴 그동안 대량 메일이 `List-Unsubscribe-Post: One-Click` 을 **선언만** 했고, 그 URL 은
+//      challenge.literstella.co.kr/?view=settings 라는 정적 SPA 였다. 메일 클라이언트가 규격대로
+//      POST 를 보내도 아무것도 바뀌지 않았다 — 선언과 실제가 어긋난 상태다.
+//      Gmail·Yahoo 는 대량 발송자에게 '작동하는' 원클릭을 요구하므로, 안 되는 걸 선언하는 건
+//      안 붙이는 것보다 나쁠 수 있다(테스트를 한다).
+//
+//   설계: 수신자별 토큰을 **무상태 HMAC** 으로 만든다. 저장할 게 없고, 비밀키를 바꾸면 전부 무효화된다.
+//     토큰 = base64url(email) + "." + channel + "." + HMAC(email:channel)
+//   POST = 즉시 처리(확인 화면 없이 — 규격 요구), GET = 사람이 눌렀을 때 보이는 확인 페이지.
+const UNSUB_CHANNELS = ["lifecycle", "sentence", "lecture", "hp", "marketing", "all"];
+
+function b64urlEncode(str) {
+  return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDecode(str) {
+  const pad = str.replace(/-/g, "+").replace(/_/g, "/");
+  return decodeURIComponent(escape(atob(pad + "=".repeat((4 - pad.length % 4) % 4))));
+}
+async function unsubToken(env, email, channel) {
+  const e = normEmail(email);
+  const sig = await hmacHex(env.OTP_SECRET || "", `unsub:${e}:${channel}`);
+  return `${b64urlEncode(e)}.${channel}.${sig.slice(0, 32)}`;
+}
+async function parseUnsubToken(env, token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return null;
+  const [b64, channel, sig] = parts;
+  if (!UNSUB_CHANNELS.includes(channel)) return null;
+  let email = "";
+  try { email = normEmail(b64urlDecode(b64)); } catch { return null; }
+  if (!email) return null;
+  const expected = (await hmacHex(env.OTP_SECRET || "", `unsub:${email}:${channel}`)).slice(0, 32);
+  if (!timingSafeEq(expected, sig)) return null;
+  return { email, channel };
+}
+// 수신자별 헤더 — 이게 있어야 원클릭이 실제로 동작한다.
+async function marketingHeadersFor(env, email, channel) {
+  const url = `${API_ORIGIN(env)}/api/unsub?t=${await unsubToken(env, email, channel)}`;
+  return {
+    "List-Unsubscribe": `<${url}>, <mailto:literbryanbae@gmail.com?subject=unsubscribe>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  };
+}
+function API_ORIGIN(env) {
+  return env.PUBLIC_API_ORIGIN || "https://literstella-api.literbryanbae.workers.dev";
+}
+
+// 채널별로 실제 수신을 끈다. 각 채널의 정본 저장소가 다르므로 여기서 한곳에 모아 둔다.
+async function applyUnsub(env, email, channel, via, userAgent) {
+  const e = normEmail(email);
+  const done = [];
+  const off = async (table, col) => {
+    const r = await sbFetch(env, table, {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ email: e, [col]: false }]),
+    });
+    if (r.ok) done.push(table);
+  };
+  if (channel === "lifecycle" || channel === "all") {
+    const r = await sbFetch(env, "email_prefs", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ email: e, lifecycle: false, updated_at: new Date().toISOString(), updated_by: via }]),
+    });
+    if (r.ok) done.push("lifecycle");
+  }
+  if (channel === "sentence" || channel === "all") await off("sentence_subscribers", "active");
+  if (channel === "lecture" || channel === "all") await off("lecture_subscribers", "active");
+  if (channel === "hp" || channel === "all") await off("hp_subscribers", "active");
+  if (channel === "marketing" || channel === "all") {
+    // 광고 동의 철회 — 출처·일시를 남긴다(철회도 입증 대상이다).
+    await sbFetch(env, `users?email=eq.${encodeURIComponent(e)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ marketing_consent: false, marketing_consent_at: new Date().toISOString(), marketing_consent_source: `unsub:${via}` }),
+    });
+    done.push("marketing");
+  }
+  try {
+    await sbFetch(env, "email_unsub_log", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify([{ email: e, channel, via, user_agent: String(userAgent || "").slice(0, 200) }]),
+    });
+  } catch { /* 기록 실패가 수신거부를 막지는 않는다 */ }
+  return done;
+}
+
+const UNSUB_LABEL = { lifecycle: "리터스텔라 안내 메일", sentence: "「클래식 영어 한 문장」", lecture: "강독 새 강의 소식", hp: "호그와트 편지", marketing: "혜택·이벤트 안내", all: "모든 메일" };
+
+async function unsubRoute(req, env, cors) {
+  const url = new URL(req.url);
+  const parsed = await parseUnsubToken(env, url.searchParams.get("t"));
+  const page = (title, body) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<title>${title}</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#FCFAF5;color:#1D2433;font:16px/1.7 -apple-system,'Malgun Gothic',sans-serif;padding:24px}` +
+    `.c{max-width:420px;text-align:center}h1{font-size:20px;margin:0 0 10px}p{color:#746B5F;margin:0 0 18px}` +
+    `a{display:inline-block;padding:12px 20px;border-radius:10px;background:#1D2433;color:#fff;text-decoration:none;font-weight:700}</style>` +
+    `<div class="c">${body}</div>`,
+    { status: 200, headers: { "content-type": "text/html; charset=utf-8", ...cors } });
+
+  if (!parsed) {
+    return page("링크가 만료되었습니다",
+      `<h1>링크가 만료되었어요</h1><p>메일의 수신거부 링크가 오래되었거나 올바르지 않습니다. 계정 설정에서 직접 끄실 수 있어요.</p>` +
+      `<a href="https://challenge.literstella.co.kr/?view=settings&tab=notify">수신 설정 열기</a>`);
+  }
+  const { email, channel } = parsed;
+  const label = UNSUB_LABEL[channel] || channel;
+
+  // 🔴 POST = 메일 클라이언트의 원클릭. 규격상 확인 화면 없이 즉시 처리해야 한다.
+  if (req.method === "POST") {
+    await applyUnsub(env, email, channel, "one-click", req.headers.get("user-agent"));
+    return json({ ok: true, channel }, 200, cors);
+  }
+  // GET 에 confirm=1 이면 처리, 아니면 확인 화면(사람이 실수로 눌렀을 때 되돌릴 여지를 준다)
+  if (url.searchParams.get("confirm") === "1") {
+    await applyUnsub(env, email, channel, "settings", req.headers.get("user-agent"));
+    return page("수신거부 완료",
+      `<h1>수신거부 처리했습니다</h1><p><b>${label}</b>을(를) 더 이상 보내지 않습니다.<br>다시 받고 싶으시면 계정 설정에서 켜실 수 있어요.</p>` +
+      `<a href="https://challenge.literstella.co.kr/?view=settings&tab=notify">수신 설정 열기</a>`);
+  }
+  return page("수신거부",
+    `<h1>${label} 수신을 끌까요?</h1><p>확인을 누르면 더 이상 보내지 않습니다.</p>` +
+    `<a href="${url.pathname}?t=${encodeURIComponent(url.searchParams.get("t"))}&confirm=1">수신거부 확인</a>`);
+}
+
+// ── 내 수신 설정 (계정 센터 '알림·수신' 화면용) ─────────────────────────────
+//   화면이 네 갈래를 각자 다른 저장소에서 읽던 것을 이 하나로 모은다.
+async function myEmailPrefs(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const email = normEmail(user.email);
+
+  if (req.method === "GET") {
+    const one = async (fn) => { try { return await fn(); } catch { return null; } };
+    const flag = async (table) => {
+      const r = await sbFetch(env, `${table}?email=eq.${encodeURIComponent(email)}&select=active&limit=1`);
+      if (!r.ok) return false;
+      const row = (await r.json())[0];
+      return !!(row && row.active);
+    };
+    const lifecycle = await one(async () => {
+      const r = await sbFetch(env, `email_prefs?email=eq.${encodeURIComponent(email)}&select=lifecycle&limit=1`);
+      if (!r.ok) return true;
+      const row = (await r.json())[0];
+      return row ? !!row.lifecycle : true;   // 행이 없으면 기본 수신
+    });
+    const marketing = await one(async () => {
+      const r = await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}&select=marketing_consent&limit=1`);
+      if (!r.ok) return false;
+      const row = (await r.json())[0];
+      return !!(row && row.marketing_consent);
+    });
+    return json({
+      ok: true,
+      prefs: {
+        lifecycle: lifecycle !== false,
+        sentence: await one(() => flag("sentence_subscribers")) || false,
+        lecture: await one(() => flag("lecture_subscribers")) || false,
+        hp: await one(() => flag("hp_subscribers")) || false,
+        marketing: marketing || false,
+      },
+    }, 200, cors);
+  }
+
+  if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const channel = String(b.channel || "");
+  const on = b.on === true;
+  if (!["lifecycle", "sentence", "lecture", "hp", "marketing"].includes(channel)) {
+    return json({ ok: false, error: "bad_channel" }, 400, cors);
+  }
+  if (!on) {
+    await applyUnsub(env, email, channel, "settings", req.headers.get("user-agent"));
+    return json({ ok: true, channel, on: false }, 200, cors);
+  }
+  // 켜기
+  const upsert = (table, row) => sbFetch(env, table, {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify([row]),
+  });
+  if (channel === "lifecycle") await upsert("email_prefs", { email, lifecycle: true, updated_at: new Date().toISOString(), updated_by: "settings" });
+  if (channel === "sentence") await upsert("sentence_subscribers", { email, active: true });
+  if (channel === "lecture") await upsert("lecture_subscribers", { email, active: true });
+  if (channel === "hp") await upsert("hp_subscribers", { email, active: true });
+  if (channel === "marketing") {
+    await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ marketing_consent: true, marketing_consent_at: new Date().toISOString(), marketing_consent_source: "settings-self" }),
+    });
+  }
+  return json({ ok: true, channel, on: true }, 200, cors);
+}
+
 // ── 마케팅 대량 발송 규약 (2026-08-18 신설) ──────────────────────────────────
 //   🔴 7/24 이관 안내 메일 2,545통을 한 번에 보냈다가 카카오·다음 계열이 무더기로 거부했고,
 //      그 반송이 Resend 차단 목록에 쌓여 같은 사람들의 '인증 코드'까지 3주간 막혔다.
@@ -974,12 +1171,14 @@ async function sendResendTemplateBatches(env, contacts, templateId, variablesFor
   let failed = 0;
   for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
     const selected = contacts.slice(offset, offset + RESEND_BATCH_SIZE);
-    const batch = selected.map((contact) => ({
+    // 수신자별 토큰 링크를 만들어야 하므로 map 이 비동기다 — Promise.all 로 모은다.
+    //   (정적 URL 이면 원클릭 POST 가 누구인지 알 수 없어 무효였다.)
+    const batch = await Promise.all(selected.map(async (contact) => ({
       from,
       to: [contact.email],
-      headers: MARKETING_HEADERS,          // 원클릭 수신거부 — 없으면 대량 발송이 통째로 거부된다
+      headers: await marketingHeadersFor(env, contact.email, "marketing").catch(() => MARKETING_HEADERS),
       template: { id: templateId, variables: variablesFor(contact) },
-    }));
+    })));
     let ok = false;
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
@@ -1112,14 +1311,21 @@ function getAudienceSegment(emails, segment) {
     recipients: emails.slice(start, start + RESEND_AUDIENCE_SEGMENT_SIZE),
   };
 }
-async function sendResendBatch(env, { to, subject, html, templateId }) {
+// 🔴 channel 을 받아 **수신자별** 수신거부 링크를 만든다(2026-08-27). 전에는 모두에게 같은
+//   정적 URL 을 붙여서, 메일 클라이언트가 원클릭 POST 를 보내도 누가 껐는지 알 수 없어 무효였다.
+async function sendResendBatch(env, { to, subject, html, templateId, channel = "marketing" }) {
   if (!env.RESEND_API_KEY || !Array.isArray(to) || !to.length) return { sent: 0, failed: 0 };
   const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
   for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
-    const batch = to.slice(offset, offset + RESEND_BATCH_SIZE).map(email => {
-      const message = { from, to: [email], headers: MARKETING_HEADERS };
+    const slice = to.slice(offset, offset + RESEND_BATCH_SIZE);
+    const perRecipientHeaders = {};
+    for (const em of slice) {
+      try { perRecipientHeaders[em] = await marketingHeadersFor(env, em, channel); } catch { /* 폴백=정적 헤더 */ }
+    }
+    const batch = slice.map(email => {
+      const message = { from, to: [email], headers: perRecipientHeaders[email] || MARKETING_HEADERS };
       if (templateId) message.template = { id: templateId };
       else Object.assign(message, { subject, html });
       return message;
@@ -1184,11 +1390,22 @@ async function lifecycleEmail(req, env, cors) {
   if (to !== normEmail(user.email)) return json({ ok: false, error: "not_own_address" }, 403, cors);
   if (!EMAIL_RE.test(to) || to.length > 254) return json({ ok: false, error: "bad_email" }, 400, cors);
   if (!LIFECYCLE[key]) return json({ ok: false, error: "bad_key" }, 400, cors);
+  // 🔴 수신 거부를 **서버에서** 본다(2026-08-27). 전에는 유일한 스위치가 브라우저 localStorage 라
+  //   기기·브라우저를 바꾸면 껐던 사람에게 다시 나갔다.
+  try {
+    const pr = await sbFetch(env, `email_prefs?email=eq.${encodeURIComponent(to)}&select=lifecycle&limit=1`);
+    if (pr.ok) {
+      const row = (await pr.json())[0];
+      if (row && row.lifecycle === false) return json({ ok: true, skipped: "opted_out" }, 200, cors);
+    }
+  } catch { /* 조회 실패가 발송을 막지는 않는다 — 정보성이라 기본 수신 */ }
   const data = (b.data && typeof b.data === "object") ? b.data : {};
   let rendered;
   try { rendered = renderEmail(key, data); } catch { return json({ ok: false, error: "render" }, 500, cors); }
   // 정보성 수신 설정 링크(마이페이지 알림설정). 추후 토큰형 수신거부로 교체 가능.
-  const unsub = `<a href="https://challenge.literstella.co.kr/?view=settings" style="color:#c8a84b;text-decoration:none;">수신 설정</a> · 발신: 리터스텔라`;
+  // 본문 수신거부 링크도 실제로 동작하는 토큰 링크로 바꾼다(전에는 설정 화면으로만 보냈다).
+  const unsubUrl = `${API_ORIGIN(env)}/api/unsub?t=${await unsubToken(env, to, "lifecycle")}`;
+  const unsub = `<a href="${unsubUrl}" style="color:#c8a84b;text-decoration:none;">수신거부</a> · <a href="https://challenge.literstella.co.kr/?view=settings&tab=notify" style="color:#c8a84b;text-decoration:none;">수신 설정</a> · 발신: 리터스텔라`;
   const html = rendered.html.replace(/\{\{unsubscribe\}\}/g, unsub);
   const ok = await sendResendEmail(env, { to, subject: rendered.subject, html });
   return json({ ok }, ok ? 200 : 502, cors);
@@ -1550,7 +1767,7 @@ async function sendSentenceDigest(req, env, cors) {
   }
   // mode === 'send' — 대량 발송(스위치 필요)
   if (env.SENTENCE_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "SENTENCE_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
-  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html });
+  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html, channel: "sentence" });
   return json({ ok: true, mode, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
@@ -1660,7 +1877,8 @@ async function sendContentUpdate(req, env, cors) {
     return json({ ok, mode, audience, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, sentTo: env.ADMIN_EMAIL, recipients: emails.length }, ok ? 200 : 502, cors);
   }
   if (env.CONTENT_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "CONTENT_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
-  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html });
+  // 채널 = 이 발송의 종류. 수신자가 원클릭으로 끄면 **그 채널만** 꺼진다(전부 끄지 않는다).
+  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html, channel: audience === "hp" ? "hp" : "lecture" });
   return json({ ok: true, mode, audience, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
@@ -2423,6 +2641,17 @@ export default {
     // 라이프사이클 정보성 메일 (가입·인증·완독·다이어리·Lyra 등). RESEND_API_KEY 필요.
     //   본인 활동 기반 정보성 → 광고 아님. 클라가 자기 이메일+키+data로 호출(멱등은 클라 localStorage).
     //   ⚠️ 서버 rate-limit은 WAF/KV 백로그(OTP와 동일 posture). 무료티어 발송한도가 1차 방어.
+    // 수신거부 원클릭(RFC 8058) — 인증 없이 토큰만으로 동작해야 한다(메일 클라이언트가 부른다).
+    if (path === "/api/unsub") {
+      if (req.method !== "GET" && req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return unsubRoute(req, env, cors);
+    }
+
+    // 내 수신 설정 — 계정 센터가 네 갈래를 한 화면에서 읽고 쓴다.
+    if (path === "/api/me/email-prefs") {
+      return myEmailPrefs(req, env, cors);
+    }
+
     if (path === "/api/lifecycle-email") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return lifecycleEmail(req, env, cors);
