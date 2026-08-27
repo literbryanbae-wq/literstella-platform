@@ -695,20 +695,38 @@ function otpEmailHtml(code, issuedAt) {
     + `<p style="margin:16px 0 0;font-size:13px;color:#8a8270;">본인이 요청하지 않았다면 이 메일을 무시하세요.</p>`;
   return brandEmailHtml(body);
 }
+// 🔴 시크릿에 섞인 보이지 않는 문자를 제거한다(2026-08-24 실장애).
+//   wrangler secret put 에 값을 붙여넣으면 끝에 개행/공백/BOM 이 딸려 들어가는 일이 잦다.
+//   그러면 `Authorization: Bearer re_xxx\n` 이 되어 **Resend 에 닿기도 전에 400** 이 난다
+//   (Resend API 로그엔 요청이 아예 안 남고, 워커는 detail 빈 400 만 본다 — 원인 추적이 어렵다).
+//   같은 함정을 audiogate 가 이미 signSecret() 으로 방어하고 있었다 — 여기에도 같은 처리를 둔다.
+function resendKey(env) {
+  const s = String(env.RESEND_API_KEY || "");
+  let out = "";
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c !== 65279 && c > 32) out += s[i]; }
+  return out;
+}
+
 async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
-  if (!env.RESEND_API_KEY) return false;
+  if (!resendKey(env)) return false;
   const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>"; // 도메인 인증 후 인증@literstella.co.kr
   // 429/5xx 지수 백오프 재시도 2회 + 실패 로깅(발송 감사 2026-07-20 P0: 대량 유입 시 순간 레이트 초과가 조용한 send_failed로 전락하던 것).
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
-      const headers = { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" };
+      const headers = { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json" };
       if (idempotencyKey) headers["Idempotency-Key"] = String(idempotencyKey).slice(0, 256);
       const r = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers,
         body: JSON.stringify({ from, to: [to], subject, html }),
       });
-      if (r.ok) return true;
+      if (r.ok) {
+        // 발송 ID 를 돌려준다(2026-08-26, 카페 이관 감사 요구). 문자열은 truthy 라
+        // 기존 14곳의 boolean 검사(if (sent) / if (!sent))는 그대로 동작한다.
+        // 🔴 sent === true 강비교만 금지 — 전수 확인 결과 그런 호출부는 없다.
+        const d = await r.json().catch(() => null);
+        return (d && d.id) ? String(d.id) : true;
+      }
       const retryable = r.status === 429 || r.status >= 500;
       let detail = "";
       try { detail = (await r.text()).slice(0, 160); } catch { /* noop */ }
@@ -731,10 +749,10 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
 //   ⚠️ fail-open: 조회가 실패(401·5xx·네트워크)하면 "차단"으로 단정하지 않고 발송을 진행한다
 //      — 조회 장애가 로그인 전면 차단으로 번지면 안 된다.
 async function isEmailSuppressed(env, email) {
-  if (!env.RESEND_API_KEY) return false;
+  if (!resendKey(env)) return false;
   try {
     const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
-      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+      headers: { Authorization: `Bearer ${resendKey(env)}` },
     });
     if (r.status === 404) return false;  // 목록에 없음 = 정상 주소
     if (r.ok) return true;               // 200 = 차단 중 → 보내봐야 안 간다
@@ -755,7 +773,7 @@ async function isEmailSuppressed(env, email) {
 //     ③ 조회 실패 시 풀지 않는다(모르면 건드리지 않는다).
 //   해제 후 또 반송되면 Resend가 다시 차단하고 웹훅이 기록 → 다음부터 ①에 걸려 자동 중단.
 async function tryAutoUnsuppress(env, email) {
-  if (!env.RESEND_API_KEY) return false;
+  if (!resendKey(env)) return false;
   try {                                                   // ① 관측된 반송 이력(90일)
     const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
     const r = await sbFetch(env, `email_bounces?email=eq.${encodeURIComponent(email)}&occurred_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
@@ -765,7 +783,7 @@ async function tryAutoUnsuppress(env, email) {
   if (env.OTP_GUARD && await env.OTP_GUARD.get(`auto-unsup:${email}`)) return false;   // ② 주소당 1회
   try {
     const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
-      method: "DELETE", headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+      method: "DELETE", headers: { Authorization: `Bearer ${resendKey(env)}` },
     });
     console.log(JSON.stringify({ evt: "auto_unsuppress", ok: r.ok, status: r.status }));
     if (!r.ok) return false;
@@ -909,7 +927,7 @@ async function fetchAllResendContacts(env) {
     for (let attempt = 0; attempt <= 4; attempt++) {
       response = await fetch(
         `https://api.resend.com/contacts?${query}`,
-        { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } },
+        { headers: { Authorization: `Bearer ${resendKey(env)}` } },
       );
       if (response.ok) break;
       if (response.status !== 429 && response.status < 500) break;
@@ -945,6 +963,203 @@ async function fetchAllClassEnrollmentEmails(env) {
   return emails;
 }
 
+// ── 수신거부(원클릭) — RFC 8058 (2026-08-27 신설) ─────────────────────────────
+//   🔴 그동안 대량 메일이 `List-Unsubscribe-Post: One-Click` 을 **선언만** 했고, 그 URL 은
+//      challenge.literstella.co.kr/?view=settings 라는 정적 SPA 였다. 메일 클라이언트가 규격대로
+//      POST 를 보내도 아무것도 바뀌지 않았다 — 선언과 실제가 어긋난 상태다.
+//      Gmail·Yahoo 는 대량 발송자에게 '작동하는' 원클릭을 요구하므로, 안 되는 걸 선언하는 건
+//      안 붙이는 것보다 나쁠 수 있다(테스트를 한다).
+//
+//   설계: 수신자별 토큰을 **무상태 HMAC** 으로 만든다. 저장할 게 없고, 비밀키를 바꾸면 전부 무효화된다.
+//     토큰 = base64url(email) + "." + channel + "." + HMAC(email:channel)
+//   POST = 즉시 처리(확인 화면 없이 — 규격 요구), GET = 사람이 눌렀을 때 보이는 확인 페이지.
+const UNSUB_CHANNELS = ["lifecycle", "sentence", "lecture", "hp", "marketing", "all"];
+
+function b64urlEncode(str) {
+  return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDecode(str) {
+  const pad = str.replace(/-/g, "+").replace(/_/g, "/");
+  return decodeURIComponent(escape(atob(pad + "=".repeat((4 - pad.length % 4) % 4))));
+}
+async function unsubToken(env, email, channel) {
+  const e = normEmail(email);
+  const sig = await hmacHex(env.OTP_SECRET || "", `unsub:${e}:${channel}`);
+  return `${b64urlEncode(e)}.${channel}.${sig.slice(0, 32)}`;
+}
+async function parseUnsubToken(env, token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return null;
+  const [b64, channel, sig] = parts;
+  if (!UNSUB_CHANNELS.includes(channel)) return null;
+  let email = "";
+  try { email = normEmail(b64urlDecode(b64)); } catch { return null; }
+  if (!email) return null;
+  const expected = (await hmacHex(env.OTP_SECRET || "", `unsub:${email}:${channel}`)).slice(0, 32);
+  if (!timingSafeEq(expected, sig)) return null;
+  return { email, channel };
+}
+// 수신자별 헤더 — 이게 있어야 원클릭이 실제로 동작한다.
+async function marketingHeadersFor(env, email, channel) {
+  const url = `${API_ORIGIN(env)}/api/unsub?t=${await unsubToken(env, email, channel)}`;
+  return {
+    "List-Unsubscribe": `<${url}>, <mailto:literbryanbae@gmail.com?subject=unsubscribe>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  };
+}
+function API_ORIGIN(env) {
+  return env.PUBLIC_API_ORIGIN || "https://literstella-api.literbryanbae.workers.dev";
+}
+
+// 채널별로 실제 수신을 끈다. 각 채널의 정본 저장소가 다르므로 여기서 한곳에 모아 둔다.
+async function applyUnsub(env, email, channel, via, userAgent) {
+  const e = normEmail(email);
+  const done = [];
+  const off = async (table, col) => {
+    const r = await sbFetch(env, table, {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ email: e, [col]: false }]),
+    });
+    if (r.ok) done.push(table);
+  };
+  if (channel === "lifecycle" || channel === "all") {
+    const r = await sbFetch(env, "email_prefs", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ email: e, lifecycle: false, updated_at: new Date().toISOString(), updated_by: via }]),
+    });
+    if (r.ok) done.push("lifecycle");
+  }
+  if (channel === "sentence" || channel === "all") await off("sentence_subscribers", "active");
+  if (channel === "lecture" || channel === "all") await off("lecture_subscribers", "active");
+  if (channel === "hp" || channel === "all") await off("hp_subscribers", "active");
+  if (channel === "marketing" || channel === "all") {
+    // 광고 동의 철회 — 출처·일시를 남긴다(철회도 입증 대상이다).
+    await sbFetch(env, `users?email=eq.${encodeURIComponent(e)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ marketing_consent: false, marketing_consent_at: new Date().toISOString(), marketing_consent_source: `unsub:${via}` }),
+    });
+    done.push("marketing");
+  }
+  try {
+    await sbFetch(env, "email_unsub_log", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify([{ email: e, channel, via, user_agent: String(userAgent || "").slice(0, 200) }]),
+    });
+  } catch { /* 기록 실패가 수신거부를 막지는 않는다 */ }
+  return done;
+}
+
+const UNSUB_LABEL = { lifecycle: "리터스텔라 안내 메일", sentence: "「클래식 영어 한 문장」", lecture: "강독 새 강의 소식", hp: "호그와트 편지", marketing: "혜택·이벤트 안내", all: "모든 메일" };
+
+async function unsubRoute(req, env, cors) {
+  const url = new URL(req.url);
+  const parsed = await parseUnsubToken(env, url.searchParams.get("t"));
+  const page = (title, body) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<title>${title}</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#FCFAF5;color:#1D2433;font:16px/1.7 -apple-system,'Malgun Gothic',sans-serif;padding:24px}` +
+    `.c{max-width:420px;text-align:center}h1{font-size:20px;margin:0 0 10px}p{color:#746B5F;margin:0 0 18px}` +
+    `a{display:inline-block;padding:12px 20px;border-radius:10px;background:#1D2433;color:#fff;text-decoration:none;font-weight:700}</style>` +
+    `<div class="c">${body}</div>`,
+    { status: 200, headers: { "content-type": "text/html; charset=utf-8", ...cors } });
+
+  if (!parsed) {
+    return page("링크가 만료되었습니다",
+      `<h1>링크가 만료되었어요</h1><p>메일의 수신거부 링크가 오래되었거나 올바르지 않습니다. 계정 설정에서 직접 끄실 수 있어요.</p>` +
+      `<a href="https://challenge.literstella.co.kr/?view=settings&tab=notify">수신 설정 열기</a>`);
+  }
+  const { email, channel } = parsed;
+  const label = UNSUB_LABEL[channel] || channel;
+
+  // 🔴 POST = 메일 클라이언트의 원클릭. 규격상 확인 화면 없이 즉시 처리해야 한다.
+  if (req.method === "POST") {
+    await applyUnsub(env, email, channel, "one-click", req.headers.get("user-agent"));
+    return json({ ok: true, channel }, 200, cors);
+  }
+  // GET 에 confirm=1 이면 처리, 아니면 확인 화면(사람이 실수로 눌렀을 때 되돌릴 여지를 준다)
+  if (url.searchParams.get("confirm") === "1") {
+    await applyUnsub(env, email, channel, "settings", req.headers.get("user-agent"));
+    return page("수신거부 완료",
+      `<h1>수신거부 처리했습니다</h1><p><b>${label}</b>을(를) 더 이상 보내지 않습니다.<br>다시 받고 싶으시면 계정 설정에서 켜실 수 있어요.</p>` +
+      `<a href="https://challenge.literstella.co.kr/?view=settings&tab=notify">수신 설정 열기</a>`);
+  }
+  return page("수신거부",
+    `<h1>${label} 수신을 끌까요?</h1><p>확인을 누르면 더 이상 보내지 않습니다.</p>` +
+    `<a href="${url.pathname}?t=${encodeURIComponent(url.searchParams.get("t"))}&confirm=1">수신거부 확인</a>`);
+}
+
+// ── 내 수신 설정 (계정 센터 '알림·수신' 화면용) ─────────────────────────────
+//   화면이 네 갈래를 각자 다른 저장소에서 읽던 것을 이 하나로 모은다.
+async function myEmailPrefs(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const email = normEmail(user.email);
+
+  if (req.method === "GET") {
+    const one = async (fn) => { try { return await fn(); } catch { return null; } };
+    const flag = async (table) => {
+      const r = await sbFetch(env, `${table}?email=eq.${encodeURIComponent(email)}&select=active&limit=1`);
+      if (!r.ok) return false;
+      const row = (await r.json())[0];
+      return !!(row && row.active);
+    };
+    const lifecycle = await one(async () => {
+      const r = await sbFetch(env, `email_prefs?email=eq.${encodeURIComponent(email)}&select=lifecycle&limit=1`);
+      if (!r.ok) return true;
+      const row = (await r.json())[0];
+      return row ? !!row.lifecycle : true;   // 행이 없으면 기본 수신
+    });
+    const marketing = await one(async () => {
+      const r = await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}&select=marketing_consent&limit=1`);
+      if (!r.ok) return false;
+      const row = (await r.json())[0];
+      return !!(row && row.marketing_consent);
+    });
+    return json({
+      ok: true,
+      prefs: {
+        lifecycle: lifecycle !== false,
+        sentence: await one(() => flag("sentence_subscribers")) || false,
+        lecture: await one(() => flag("lecture_subscribers")) || false,
+        hp: await one(() => flag("hp_subscribers")) || false,
+        marketing: marketing || false,
+      },
+    }, 200, cors);
+  }
+
+  if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const channel = String(b.channel || "");
+  const on = b.on === true;
+  if (!["lifecycle", "sentence", "lecture", "hp", "marketing"].includes(channel)) {
+    return json({ ok: false, error: "bad_channel" }, 400, cors);
+  }
+  if (!on) {
+    await applyUnsub(env, email, channel, "settings", req.headers.get("user-agent"));
+    return json({ ok: true, channel, on: false }, 200, cors);
+  }
+  // 켜기
+  const upsert = (table, row) => sbFetch(env, table, {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify([row]),
+  });
+  if (channel === "lifecycle") await upsert("email_prefs", { email, lifecycle: true, updated_at: new Date().toISOString(), updated_by: "settings" });
+  if (channel === "sentence") await upsert("sentence_subscribers", { email, active: true });
+  if (channel === "lecture") await upsert("lecture_subscribers", { email, active: true });
+  if (channel === "hp") await upsert("hp_subscribers", { email, active: true });
+  if (channel === "marketing") {
+    await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ marketing_consent: true, marketing_consent_at: new Date().toISOString(), marketing_consent_source: "settings-self" }),
+    });
+  }
+  return json({ ok: true, channel, on: true }, 200, cors);
+}
+
 // ── 마케팅 대량 발송 규약 (2026-08-18 신설) ──────────────────────────────────
 //   🔴 7/24 이관 안내 메일 2,545통을 한 번에 보냈다가 카카오·다음 계열이 무더기로 거부했고,
 //      그 반송이 Resend 차단 목록에 쌓여 같은 사람들의 '인증 코드'까지 3주간 막혔다.
@@ -968,19 +1183,21 @@ async function sendResendTemplateBatches(env, contacts, templateId, variablesFor
   let failed = 0;
   for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
     const selected = contacts.slice(offset, offset + RESEND_BATCH_SIZE);
-    const batch = selected.map((contact) => ({
+    // 수신자별 토큰 링크를 만들어야 하므로 map 이 비동기다 — Promise.all 로 모은다.
+    //   (정적 URL 이면 원클릭 POST 가 누구인지 알 수 없어 무효였다.)
+    const batch = await Promise.all(selected.map(async (contact) => ({
       from,
       to: [contact.email],
-      headers: MARKETING_HEADERS,          // 원클릭 수신거부 — 없으면 대량 발송이 통째로 거부된다
+      headers: await marketingHeadersFor(env, contact.email, "marketing").catch(() => MARKETING_HEADERS),
       template: { id: templateId, variables: variablesFor(contact) },
-    }));
+    })));
     let ok = false;
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
         const response = await fetch("https://api.resend.com/emails/batch", {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${env.RESEND_API_KEY}`,
+            Authorization: `Bearer ${resendKey(env)}`,
             "Content-Type": "application/json",
             "Idempotency-Key": `${campaignKey}-${offset}`,
           },
@@ -1034,7 +1251,9 @@ async function runMigrationNoticeCampaign(env) {
       CONNECTION_URL: "https://class-new.literstella.co.kr/verify?utm_source=resend&utm_medium=email&utm_campaign=lifetime_course_migration_2608",
       STABILIZATION_DATE: "2026년 8월 31일",
       SUPPORT_URL: "http://pf.kakao.com/_xkxdZxeb/chat",
-      PRIVACY_URL: "https://read.literstella.co.kr/privacy",
+      // 🔴 2026-08-23 정정: read.literstella.co.kr/privacy 는 실재하지 않는다(진단앱 SPA 폴백 →
+      //    200을 주지만 진단 랜딩 홈이 뜬다). 발송 메일의 개인정보처리방침 링크가 죽어 있었다.
+      PRIVACY_URL: "https://challenge.literstella.co.kr/privacy",
     }),
     "migration-20260801-0800",
   );
@@ -1053,7 +1272,7 @@ async function syncStellaMarketingOptIn(req, env, cors) {
   }
 
   const headers = {
-    Authorization: `Bearer ${env.RESEND_API_KEY}`,
+    Authorization: `Bearer ${resendKey(env)}`,
     "Content-Type": "application/json",
   };
   const email = encodeURIComponent(user.email);
@@ -1104,14 +1323,22 @@ function getAudienceSegment(emails, segment) {
     recipients: emails.slice(start, start + RESEND_AUDIENCE_SEGMENT_SIZE),
   };
 }
-async function sendResendBatch(env, { to, subject, html, templateId }) {
+// 🔴 channel 을 받아 **수신자별** 수신거부 링크를 만든다(2026-08-27). 전에는 모두에게 같은
+//   정적 URL(MARKETING_HEADERS)을 붙여서, 메일 클라이언트가 원클릭 POST 를 보내도 누가 껐는지
+//   알 수 없어 아무 일도 일어나지 않았다. channel 기본값은 "marketing".
+async function sendResendBatch(env, { to, subject, html, templateId, channel = "marketing" }) {
   if (!env.RESEND_API_KEY || !Array.isArray(to) || !to.length) return { sent: 0, failed: 0 };
   const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
   for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
-    const batch = to.slice(offset, offset + RESEND_BATCH_SIZE).map(email => {
-      const message = { from, to: [email], headers: MARKETING_HEADERS };
+    const slice = to.slice(offset, offset + RESEND_BATCH_SIZE);
+    const perRecipientHeaders = {};
+    for (const em of slice) {
+      try { perRecipientHeaders[em] = await marketingHeadersFor(env, em, channel); } catch { /* 폴백=정적 헤더 */ }
+    }
+    const batch = slice.map(email => {
+      const message = { from, to: [email], headers: perRecipientHeaders[email] || MARKETING_HEADERS };
       if (templateId) message.template = { id: templateId };
       else Object.assign(message, { subject, html });
       return message;
@@ -1121,7 +1348,7 @@ async function sendResendBatch(env, { to, subject, html, templateId }) {
       try {
         const r = await fetch("https://api.resend.com/emails/batch", {
           method: "POST",
-          headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+          headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json" },
           body: JSON.stringify(batch),
         });
         if (r.ok) { ok = true; break; }
@@ -1144,7 +1371,7 @@ async function fetchResendAudienceEmails(env) {
     for (let page = 0; page < 100; page++) {
       const query = new URLSearchParams({ limit: "100" });
       if (after) query.set("after", after);
-      const r = await fetch(`https://api.resend.com/contacts?${query}`, { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } });
+      const r = await fetch(`https://api.resend.com/contacts?${query}`, { headers: { Authorization: `Bearer ${resendKey(env)}` } });
       if (!r.ok) return { ok: false, error: "resend_contacts_failed", status: r.status };
       const body = await r.json().catch(() => null);
       const rows = Array.isArray(body?.data) ? body.data : [];
@@ -1163,16 +1390,35 @@ async function fetchResendAudienceEmails(env) {
 }
 // 라이프사이클 정보성 메일 발송. {to, key, data} → renderEmail → {{unsubscribe}} 치환 → Resend.
 async function lifecycleEmail(req, env, cors) {
+  // 🔴 스팸 중계기를 닫는다 (2026-08-27). 이 라우트는 인증이 없어서 누구나 아무 주소로
+  //   리터스텔라 명의 메일(가입 환영·성공 축하·완독 등 14종)을 보낼 수 있었다. 발신 평판이
+  //   훼손되고, 7/24 반송 사고로 이미 계정 단위 차단목록을 겪은 이력이 있다.
+  //   이제 로그인 세션을 요구하고 **본인 주소로만** 허용한다. 호출부는 전부 로그인 이후 지점이라
+  //   정상 흐름에 영향이 없다(클라이언트 토큰 동봉은 bf22c39 로 선배포 확인).
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
   let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
   const to = String(b.to || "").trim().toLowerCase();
   const key = String(b.key || "").trim();
+  if (to !== normEmail(user.email)) return json({ ok: false, error: "not_own_address" }, 403, cors);
   if (!EMAIL_RE.test(to) || to.length > 254) return json({ ok: false, error: "bad_email" }, 400, cors);
   if (!LIFECYCLE[key]) return json({ ok: false, error: "bad_key" }, 400, cors);
+  // 🔴 수신 거부를 **서버에서** 본다(2026-08-27). 전에는 유일한 스위치가 브라우저 localStorage 라
+  //   기기·브라우저를 바꾸면 껐던 사람에게 다시 나갔다.
+  try {
+    const pr = await sbFetch(env, `email_prefs?email=eq.${encodeURIComponent(to)}&select=lifecycle&limit=1`);
+    if (pr.ok) {
+      const row = (await pr.json())[0];
+      if (row && row.lifecycle === false) return json({ ok: true, skipped: "opted_out" }, 200, cors);
+    }
+  } catch { /* 조회 실패가 발송을 막지는 않는다 — 정보성이라 기본 수신 */ }
   const data = (b.data && typeof b.data === "object") ? b.data : {};
   let rendered;
   try { rendered = renderEmail(key, data); } catch { return json({ ok: false, error: "render" }, 500, cors); }
   // 정보성 수신 설정 링크(마이페이지 알림설정). 추후 토큰형 수신거부로 교체 가능.
-  const unsub = `<a href="https://challenge.literstella.co.kr/?view=settings" style="color:#c8a84b;text-decoration:none;">수신 설정</a> · 발신: 리터스텔라`;
+  // 본문 수신거부 링크도 실제로 동작하는 토큰 링크로 바꾼다(전에는 설정 화면으로만 보냈다).
+  const unsubUrl = `${API_ORIGIN(env)}/api/unsub?t=${await unsubToken(env, to, "lifecycle")}`;
+  const unsub = `<a href="${unsubUrl}" style="color:#c8a84b;text-decoration:none;">수신거부</a> · <a href="https://challenge.literstella.co.kr/?view=settings&tab=notify" style="color:#c8a84b;text-decoration:none;">수신 설정</a> · 발신: 리터스텔라`;
   const html = rendered.html.replace(/\{\{unsubscribe\}\}/g, unsub);
   const ok = await sendResendEmail(env, { to, subject: rendered.subject, html });
   return json({ ok }, ok ? 200 : 502, cors);
@@ -1238,12 +1484,19 @@ async function otpGuardConsume(env, token) {
   if (!env.OTP_GUARD) return null;
   const key = `otp:${await sha256Hex(token)}`;
   const cur = await env.OTP_GUARD.get(key);
-  // 키가 없다 = 만료됐거나 이미 성공해 소진된 토큰. 재사용 차단.
-  if (cur === null) return { error: "expired", message: "인증 코드가 만료됐어요. 다시 받아 주세요." };
+  // 🔴 키가 없다 != 시간 만료다(2026-08-27). 토큰 자체의 exp 는 이 함수를 부르기 **전에** 이미 검사하므로,
+  //   여기까지 왔다는 건 아직 시간이 남았다는 뜻이다. 그런데도 "10분 지나 만료"라고 안내해서
+  //   실사용자가 새 코드를 받아 같은 벽에 5번 부딪히고 포기했다(정재연 님 신고).
+  //   남은 원인은 "이미 한 번 통과해 소진됨" 뿐이니 그대로 말한다 — 새 코드를 받아도 소용없다는 걸 알려야
+  //   사용자가 무한 재발급 루프에 빠지지 않는다.
+  if (cur === null) return { error: "already_used", message: "이 인증 코드는 이미 사용됐어요. 새 코드를 받아 주세요." };
+  // 한도 초과 표식. 종전엔 키를 **삭제**해서, 그 다음 시도부터는 원인이 "이미 사용됨"으로 둔갑했다
+  //   — 사용자는 왜 막혔는지 영영 모른 채 새 코드만 계속 받았다. 표식을 남겨 계속 같은 이유를 말한다.
+  if (cur === "X") return { error: "too_many_attempts", message: "코드를 여러 번 틀렸어요. 새 코드를 받아 주세요." };
   const n = Number(cur) + 1;
   if (n > OTP_MAX_TRIES) {
-    await env.OTP_GUARD.delete(key);
-    return { error: "too_many_attempts", message: "코드를 여러 번 틀렸어요. 처음부터 다시 받아 주세요." };
+    await env.OTP_GUARD.put(key, "X", { expirationTtl: 900 });
+    return { error: "too_many_attempts", message: "코드를 여러 번 틀렸어요. 새 코드를 받아 주세요." };
   }
   await env.OTP_GUARD.put(key, String(n), { expirationTtl: 900 });
   return null;
@@ -1308,7 +1561,35 @@ async function otpVerify(req, env, cors) {
   const expected = await hmacHex(env.OTP_SECRET, `code:${email}:${code}:${exp}`);
   if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
   await otpGuardBurn(env, b.token);                            // 성공 = 1회용 소진
-  return json({ ok: true }, 200, cors);
+  // 🔴 여기서 명단 대조까지 끝낸다(2026-08-24) — 종전엔 클라가 같은 토큰으로 verifyClassOtp 를
+  //    한 번 더 불러 자동 연결하려 했지만, 바로 윗줄에서 토큰을 **이미 소각**해 그 호출은
+  //    구조적으로 항상 실패했다(.catch 로 삼켜 아무도 몰랐고, 사용자는 /verify 에서 또 인증해야 했다).
+  //    "가입 때 인증하고 연결 때 또 인증한다"는 운영자 지적의 실제 원인이 이것이었다.
+  //    토큰 재사용을 없애고 **이메일 소유가 증명된 그 자리에서** 서버가 직접 기록한다.
+  //    명단에 없으면 아무 일도 하지 않는다(no-op) — 인증 자체의 성패에는 영향을 주지 않는다.
+  let linked = [];
+  try {
+    // 🔴 findClassEnrollments 는 **객체**를 준다({ ok, records, books }). 종전엔 그걸 배열로 받아
+    //   `books.length` 가 항상 undefined -> falsy 라 이 블록이 **한 번도 실행되지 않았다**(2026-08-27 발견).
+    //   즉 "가입 때 인증하면 연결까지 끝난다"는 2026-08-24 수정 자체가 죽어 있었고,
+    //   운영자가 지적한 "가입 때 인증하고 연결 때 또 인증한다"가 그대로 남아 있었다.
+    const { books, records } = await findClassEnrollments(env, email);
+    if (books.length) {
+      const r = await sbFetch(env, "class_verifications?on_conflict=email,book_code", {
+        method: "POST",
+        headers: { Prefer: "return=minimal,resolution=ignore-duplicates" },
+        body: JSON.stringify(records.map(({ bookCode, enrollmentEmail }) => ({ email, book_code: bookCode, enrollment_email: enrollmentEmail }))),
+      });
+      if (r.ok) linked = books;
+      // 실패해도 인증 자체는 성공이다(no-op). 다만 조용히 지나가지 않게 남긴다 —
+      // 23505 면 그 결제 이메일이 다른 계정에 묶인 것이고, 사용자는 /verify 에서 안내를 받는다.
+      else console.log(JSON.stringify({ evt: "otp_auto_link_rejected", status: r.status, books: books.length }));
+      console.log(JSON.stringify({ evt: "otp_auto_link", books: books.length, ok: r.ok }));
+    }
+  } catch (e) {
+    console.log(JSON.stringify({ evt: "otp_auto_link_fail", detail: String(e).slice(0, 100) }));
+  }
+  return json({ ok: true, linked }, 200, cors);
 }
 
 // ── 강독 클래스 소장회원 인증(6강+ 해금) ──
@@ -1328,6 +1609,20 @@ async function findClassEnrollments(env, email) {
   }
   const records = [...byBook].map(([bookCode, enrollmentEmail]) => ({ bookCode, enrollmentEmail }));
   return { ok: true, records, books: records.map((record) => record.bookCode) };
+}
+
+// 이 결제 이메일을 이미 쥐고 있는 **로그인 계정**을 찾아 마스킹해 돌려준다.
+//   목적은 색출이 아니라 자가 해결이다 — 실측상 사실상 전부 "본인이 계정을 두 개 만든 것"이었다
+//   (2026-08-27: 결제 이메일이 다른 계정에 묶인 128건 중 본인 계정이 따로 있는 경우 23건).
+//   마스킹된 주소만 봐도 본인은 어느 계정인지 알아본다.
+async function enrollmentHolder(env, records) {
+  for (const enrollmentEmail of [...new Set(records.map((r) => r.enrollmentEmail))]) {
+    const r = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollmentEmail)}&select=email&limit=5`);
+    if (!r.ok) continue;
+    const rows = (await r.json().catch(() => [])) || [];
+    if (rows.length && rows[0].email) return maskEmailAddr(rows[0].email);
+  }
+  return null;
 }
 
 async function verifiedBooksForLogin(env, loginEmail) {
@@ -1350,15 +1645,26 @@ async function classVerifyOtp(req, env, cors) {
   if (guard) return json({ ok: false, ...guard }, 400, cors);
   const expected = await hmacHex(env.OTP_SECRET, `code:${email}:${code}:${exp}`);
   if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
-  await otpGuardBurn(env, b.token);                            // 성공 = 1회용 소진
+  // 🔴 여기서 태우지 않는다(2026-08-27). 종전엔 코드가 맞자마자 소각해서, 그 아래 DB 기록이 실패하면
+  //   **맞는 코드가 이미 재가 된 채** 사용자에게 실패만 보였다. 다시 넣으면 "만료"라고 나왔다.
+  //   소각은 결과가 확정된 자리에서 한다(finishVerify). 시도 횟수는 otpGuardConsume 가 이미 세고 있어
+  //   재시도를 열어 둬도 무차별 대입은 5회에서 막힌다.
+  const finishVerify = async (payload, status = 200) => {
+    await otpGuardBurn(env, b.token);                          // 결과 확정 = 1회용 소진
+    return json(payload, status, cors);
+  };
   // 이메일 소유 증명됨 → 수강 명단 대조(service_role).
   //   🔴 인증 1회 = 평생소장 전부(운영자 2026-07-20): 요청한 강좌 하나가 아니라 이 이메일이 명단에 있는
   //   모든 book_code에 verifications를 일괄 심는다 — 다른 소장 강좌는 재인증 없이 즉시 열림.
   const enrollment = await findClassEnrollments(env, email);
+  // 명단 조회 자체가 실패 = 우리 쪽 장애. 코드는 태우지 않는다 — 같은 코드로 다시 시도할 수 있어야 한다.
   if (!enrollment.ok) return json({ ok: false, error: "roster_lookup_failed" }, 502, cors);
   const { books, records } = enrollment;
-  if (!books.length) return json({ ok: false, notEnrolled: true, message: "이 이메일은 강독 클래스 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
-  const ins = await sbFetch(env, `class_verifications`, {
+  if (!books.length) return finishVerify({ ok: false, notEnrolled: true, message: "이 이메일은 강독 클래스 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." });
+  // on_conflict 목표를 **명시**한다(2026-08-28). 안 적으면 같은 계정의 재인증까지 충돌로 올라와
+  //   "다른 계정에 묶임"과 구분이 흐려진다. 이걸 붙여도 enrollment_once 위반은 그대로 터지는데,
+  //   그게 정확히 우리가 잡고 싶은 "진짜 다른 계정" 신호다.
+  const ins = await sbFetch(env, `class_verifications?on_conflict=email,book_code`, {
     method: "POST",
     headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
     body: JSON.stringify(records.map(({ bookCode, enrollmentEmail }) => ({
@@ -1367,15 +1673,43 @@ async function classVerifyOtp(req, env, cors) {
       enrollment_email: enrollmentEmail,
     }))),
   });
-  if (!ins.ok) return json({ ok: false, error: "record_failed" }, 502, cors);
+  if (!ins.ok) {
+    const detail = await ins.text().catch(() => "");
+    // 🔴 enrollment_once 유니크 충돌(23505) — 같은 결제 이메일이 **다른 로그인 계정**에 이미 묶여 있다.
+    //   ignore-duplicates 는 PK(email,book_code)만 무시하므로 이 유니크는 그대로 터진다.
+    //   종전엔 이게 502 record_failed 로 뭉개져 "인증을 완료하지 못했어요"만 보였고, 재시도하면
+    //   토큰이 이미 소각돼 "만료"가 떴다. 실제 원인은 계정이 두 개인 것이라 몇 번을 해도 안 된다.
+    //   이제 어느 계정이 쥐고 있는지 가려서 알려 준다 — 실측상 거의 전부 본인의 두 번째 계정이라
+    //   이 한 줄이면 스스로 해결한다.
+    if (ins.status === 409 || /23505|duplicate/i.test(detail)) {
+      const holder = await enrollmentHolder(env, records);
+      // 🔴 로그인 이메일을 남긴다(2026-08-28). 정재연 님 건을 조사할 때 실패 로그에 이게 없어서
+      //   "어느 계정으로 시도했나"를 소거법으로 좁혀야 했고, 하마터면 반대로 판단할 뻔했다.
+      console.error(JSON.stringify({ evt: "class_verify_already_linked", login: maskEmailAddr(email), holder }));
+      return finishVerify({
+        ok: false,
+        alreadyLinked: true,
+        holder,
+        message: holder
+          ? `이 수강 이메일은 이미 ${holder} 계정에 연결돼 있어요. 그 계정으로 로그인하시면 강좌가 그대로 있어요. 그 계정을 쓸 수 없다면 카카오 채널로 알려 주세요 — 지금 계정으로 옮겨 드릴게요.`
+          : "이 수강 이메일은 이미 다른 계정에 연결돼 있어요. 카카오 채널로 문의해 주세요.",
+      });
+    }
+    console.error(JSON.stringify({ evt: "class_verify_record_failed", status: ins.status, detail: detail.slice(0, 200) }));
+    // 우리 쪽 일시 장애 — 코드는 살려 둔다(태우지 않는다).
+    return json({ ok: false, error: "record_failed" }, 502, cors);
+  }
   const verifiedBooks = await verifiedBooksForLogin(env, email);
   if (!books.every((ownedBook) => verifiedBooks.includes(ownedBook))) {
-    return json({ ok: false, alreadyLinked: true, message: "이 수강 이메일은 이미 다른 계정에 연결돼 있어요. 카카오 채널로 문의해 주세요." }, 200, cors);
+    const holder = await enrollmentHolder(env, records);
+    return finishVerify({ ok: false, alreadyLinked: true, holder, message: holder
+      ? `이 수강 이메일은 이미 ${holder} 계정에 연결돼 있어요. 그 계정으로 로그인해 주세요.`
+      : "이 수강 이메일은 이미 다른 계정에 연결돼 있어요. 카카오 채널로 문의해 주세요." });
   }
   if (!classBookRequestSatisfied(book, books)) {
-    return json({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 열렸어요." }, 200, cors);
+    return finishVerify({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 열렸어요." });
   }
-  return json({ ok: true, granted: books }, 200, cors);
+  return finishVerify({ ok: true, granted: books });
 }
 
 // ── 결제 이메일 ≠ 로그인 이메일 수강생 셀프서비스 연결 (2026-07-18, 운영자: 코드 수동발급은 3천명 규모 불가) ──
@@ -1400,26 +1734,35 @@ async function classLinkEnrollment(req, env, cors) {
   if (guard) return json({ ok: false, ...guard }, 400, cors);
   const expected = await hmacHex(env.OTP_SECRET, `code:${enrollEmail}:${code}:${exp}`);
   if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
-  await otpGuardBurn(env, b.token);                            // 성공 = 1회용 소진
+  // 🔴 여기서 태우지 않는다(2026-08-27) — classVerifyOtp 와 같은 병이었다.
+  //   아래 어느 단계든 실패하면 맞는 코드가 이미 재가 돼, 재시도 시 "만료"로 보였다.
+  const finishLink = async (payload, status = 200) => {
+    await otpGuardBurn(env, b.token);                          // 결과 확정 = 1회용 소진
+    return json(payload, status, cors);
+  };
   // 결제 이메일 소유 증명됨 → 수강 명단 대조.
   //   🔴 인증 1회 = 평생소장 전부(운영자 2026-07-20): 이 결제 이메일이 명단에 있는 모든 book_code를 로그인 계정에 일괄 귀속.
   const enrollment = await findClassEnrollments(env, enrollEmail);
   if (!enrollment.ok) return json({ ok: false, error: "roster_lookup_failed" }, 502, cors);
   const { books, records } = enrollment;
-  if (!books.length) return json({ ok: false, notEnrolled: true, message: "이 이메일은 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." }, 200, cors);
+  if (!books.length) return finishLink({ ok: false, notEnrolled: true, message: "이 이메일은 수강 명단에 없어요. 결제하신 이메일이 맞는지 확인해 주세요." });
   // 1회 귀속 사전 확인(친절 메시지용 — 최종 방어는 unique index): 어느 강좌든 다른 계정에 이미 귀속된 메일이면 전체 차단(공유 루프홀 방지).
   for (const enrollmentEmail of [...new Set(records.map((record) => record.enrollmentEmail))]) {
     const linked = await sbFetch(env, `class_verifications?enrollment_email=eq.${encodeURIComponent(enrollmentEmail)}&select=email&limit=10`);
     if (linked.ok) {
       const rows = (await linked.json()) || [];
-      if (rows.some(r => r.email !== loginEmail)) {
-        return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요. 그 계정으로 로그인하시거나, 본인 수강권이 맞는데 연결이 안 된다면 카카오 채널로 문의해 주세요." }, 200, cors);
+      const other = rows.find(r => r.email !== loginEmail);
+      if (other) {
+        // 어느 계정인지 마스킹해 알려 준다 — 실측상 거의 전부 본인의 두 번째 계정이라 이 한 줄이면 스스로 푼다.
+        return finishLink({ ok: false, alreadyLinked: true, holder: maskEmailAddr(other.email),
+          message: `이 결제 이메일은 이미 ${maskEmailAddr(other.email)} 계정에 연결돼 있어요. 그 계정으로 로그인하시면 강좌가 그대로 있어요. 그 계정을 쓸 수 없다면 카카오 채널로 알려 주세요 — 지금 계정으로 옮겨 드릴게요.` });
       }
     } else {
+      // 조회 실패 = 우리 쪽 장애. 코드는 태우지 않는다 — 같은 코드로 다시 시도할 수 있어야 한다.
       return json({ ok: false, error: "verification_lookup_failed" }, 502, cors);
     }
   }
-  const ins = await sbFetch(env, `class_verifications`, {
+  const ins = await sbFetch(env, `class_verifications?on_conflict=email,book_code`, {
     method: "POST",
     headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
     body: JSON.stringify(records.map(({ bookCode, enrollmentEmail }) => ({ email: loginEmail, book_code: bookCode, enrollment_email: enrollmentEmail }))),
@@ -1432,19 +1775,25 @@ async function classLinkEnrollment(req, env, cors) {
     if (ins.status === 409 || /23505|duplicate/i.test(t)) {
       // 로그인 계정 자신의 (email,book) PK 중복이면 멱등 성공
       const verifiedBooks = await verifiedBooksForLogin(env, loginEmail);
-      if (books.every((ownedBook) => verifiedBooks.includes(ownedBook))) return json({ ok: true, granted: books }, 200, cors);
-      return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." }, 200, cors);
+      if (books.every((ownedBook) => verifiedBooks.includes(ownedBook))) return finishLink({ ok: true, granted: books });
+      const holder = await enrollmentHolder(env, records);
+      return finishLink({ ok: false, alreadyLinked: true, holder, message: holder
+        ? `이 결제 이메일은 이미 ${holder} 계정에 연결돼 있어요. 그 계정으로 로그인해 주세요.`
+        : "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." });
     }
     return json({ ok: false, error: "record_failed" }, 502, cors);
   }
   const verifiedBooks = await verifiedBooksForLogin(env, loginEmail);
   if (!books.every((ownedBook) => verifiedBooks.includes(ownedBook))) {
-    return json({ ok: false, alreadyLinked: true, message: "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." }, 200, cors);
+    const holder = await enrollmentHolder(env, records);
+    return finishLink({ ok: false, alreadyLinked: true, holder, message: holder
+      ? `이 결제 이메일은 이미 ${holder} 계정에 연결돼 있어요. 그 계정으로 로그인해 주세요.`
+      : "이 결제 이메일은 이미 다른 계정에 연결돼 있어요." });
   }
   if (!classBookRequestSatisfied(book, books)) {
-    return json({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 연결됐어요." }, 200, cors);
+    return finishLink({ ok: false, notEnrolled: true, granted: books, message: "이 강좌는 수강 명단에 없어요. 대신 소장하신 다른 강좌는 지금 인증으로 함께 연결됐어요." });
   }
-  return json({ ok: true, granted: books }, 200, cors);
+  return finishLink({ ok: true, granted: books });
 }
 
 // ── 본인인증(통합인증) 결과 조회 — identityVerificationId로 PortOne 조회 → verifiedCustomer. ──
@@ -1534,7 +1883,7 @@ async function sendSentenceDigest(req, env, cors) {
   }
   // mode === 'send' — 대량 발송(스위치 필요)
   if (env.SENTENCE_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "SENTENCE_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
-  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html });
+  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html, channel: "sentence" });
   return json({ ok: true, mode, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
@@ -1644,7 +1993,8 @@ async function sendContentUpdate(req, env, cors) {
     return json({ ok, mode, audience, segment, totalSegments: selected.totalSegments, segmentRecipients: selected.recipients.length, sentTo: env.ADMIN_EMAIL, recipients: emails.length }, ok ? 200 : 502, cors);
   }
   if (env.CONTENT_SEND_ENABLED !== "true") return json({ ok: false, error: "send_disabled", hint: "CONTENT_SEND_ENABLED=true 설정 후 발송" }, 403, cors);
-  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html });
+  // 채널 = 이 발송의 종류. 수신자가 원클릭으로 끄면 **그 채널만** 꺼진다(전부 끄지 않는다).
+  const { sent, failed } = await sendResendBatch(env, { to: selected.recipients, subject, html, channel: audience === "hp" ? "hp" : "lecture" });
   return json({ ok: true, mode, audience, segment, totalSegments: selected.totalSegments, sent, failed, segmentRecipients: selected.recipients.length, recipients: emails.length }, 200, cors);
 }
 
@@ -1719,6 +2069,32 @@ async function classLinkMatch(env, { loginEmail, claimedEmail, name, phone }) {
         if (er.ok && (await er.json()).length) return { type: "candidate", masked: maskEmailAddr(em) };
       }
     }
+    // ③-b 구 클래스(LiveKlass) 연락처 원장 — 전화 정확 일치 (2026-08-26 운영자 지시).
+    //   users.phone 은 20명뿐이라 위 ③이 사실상 죽어 있었다. LiveKlass 수출 명단(7,627행,
+    //   전화 커버리지 ~99%)을 class_roster_contacts 로 적재해 "핸드폰으로 옛 수강 찾기"를 살린다.
+    //   전화만으로도 후보를 돌려주되(가족 공유 번호 가능성) **마스킹된 이메일만** 노출하고,
+    //   연결 자체는 종전대로 OTP 증명 또는 관리자 수동 승인 경유다 — 여기서 grant 하지 않는다.
+    const cr = await sbFetch(env, `class_roster_contacts?phone_norm=eq.${encodeURIComponent(ph)}&select=email,book_code,buyer_name&limit=30`);
+    if (cr.ok) {
+      const rows = await cr.json();
+      // 이름이 있으면 이름 일치 행을 우선(가족 공유 번호 구분), 없으면 전화 단독
+      const named = rows.filter((x) => nm && String(x.buyer_name || "").trim() === nm);
+      const pick = (named.length ? named : rows);
+      const byEmail = {};
+      for (const x of pick) {
+        const em = normEmail(x.email);
+        if (!em || emails.includes(em)) continue;
+        (byEmail[em] = byEmail[em] || []).push(x.book_code);
+      }
+      const found = Object.entries(byEmail);
+      if (found.length) {
+        return {
+          type: "candidate",
+          masked: maskEmailAddr(found[0][0]),
+          rosterMatch: found.map(([em, books]) => ({ masked: maskEmailAddr(em), books: [...new Set(books)], nameMatched: named.length > 0 })),
+        };
+      }
+    }
   }
   return { type: "none" };
 }
@@ -1734,6 +2110,472 @@ async function classLinkMatch(env, { loginEmail, claimedEmail, name, phone }) {
 //      명단 이메일 일치까지 확인한다. 우회가 아니라 **같은 증명을 두 번 요구하던 것을 없애는 것**이다.
 //   🔴 이메일/비번 계정은 이 경로를 쓰지 않는다 — Supabase Confirm 이 OFF 라 email_confirmed_at 이
 //      가입 즉시 채워질 수 있어 "확인됨"이 소유 증명이 아니다. 그쪽은 기존 OTP 경로를 그대로 둔다.
+// ── GET /api/me/overview — 계정 센터 대시보드 "내 리터스텔라" (2026-08-26 P1) ──────────
+//   카드 5장을 위해 API 를 5번 부르지 않는다. 이 하나로 4앱 요약을 모아 준다.
+//
+//   설계 원칙 3가지:
+//   ① **새 테이블 0** — 전부 기존 원장 조회의 조합이다.
+//   ② **표시 전용** — 포인트 잔액·자리 판정 같은 값은 각 정본(포인트·구독 세션)이 소유한다.
+//      여기선 원장을 읽어 보여줄 뿐, 규칙을 새로 만들거나 계산을 흉내 내지 않는다.
+//      (화면이 서버 판정을 흉내 내면 "화면은 열리는데 서버가 막는" 어긋남이 난다 — §3-2 규칙 5)
+//   ③ **카드 단위 실패** — 한 조각이 죽어도 그 키만 null 이고 나머지는 살아 있다.
+//      대시보드 전체가 빈 화면이 되는 것보다, 카드 하나가 조용히 빠지는 편이 낫다(Zero-Error).
+//
+//   인증: X-User-Token(로그인 세션) 필수 — 남의 요약을 볼 길을 만들지 않는다.
+async function meOverview(req, env, cors) {
+  if (req.method !== "GET") return json({ ok: false, error: "method" }, 405, cors);
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const email = normEmail(user.email);
+  if (!email) return json({ ok: false, error: "no_email" }, 400, cors);
+
+  const one = async (fn) => { try { return await fn(); } catch (_e) { return null; } };
+
+  // ① 진단 — 레벨·타입·AI 리포트 유무 (users 행)
+  const diag = await one(async () => {
+    const r = await sbFetch(env, `users?email=eq.${encodeURIComponent(email)}&select=id,nickname,diag_level,diag_type,ai_report,diag_full_result&limit=1`);
+    if (!r.ok) return null;
+    const u = (await r.json())[0];
+    if (!u) return null;
+    // 🔴 diag_level 은 '진단을 봤다'는 증거가 아니다(2026-08-26 실측으로 확인).
+    //    users.diag_level 은 NOT NULL 이라 워커 upsert 가 `result.level || 'L1'` 로 항상 채운다.
+    //    그래서 1,215명 전원에게 값이 있지만, 실제 결과(diag_full_result)를 가진 사람은 72명(5.9%)뿐이고
+    //    1,143명은 진단을 본 적 없이 'L1' 만 박혀 있다. 이걸 그대로 카드에 띄우면 **보지도 않은 사람에게
+    //    지어낸 영어 레벨을 통보하는 셈**이라, 아무것도 안 보여 주는 것보다 나쁘다.
+    //    (email_confirmed_at 이 소유 증명이 아니었던 것과 같은 함정 — 산출물이 있다고 사건이 있었던 게 아니다.)
+    //    taken=false 면 화면은 레벨 대신 '진단 하러 가기'를 띄운다 — 퍼널 1순위(가입 94% 무진단)와도 맞는다.
+    const taken = !!u.diag_full_result;
+    return {
+      userId: u.id, nickname: u.nickname || null, taken,
+      level: taken ? (u.diag_level || null) : null,
+      type: taken ? (u.diag_type || null) : null,
+      hasAiReport: !!u.ai_report,
+    };
+  });
+
+  // ② 챌린지 — 연속 인증일수·이번 시즌 인증 수. userId 가 있어야 조회 가능하다.
+  const challenge = diag?.userId ? await one(async () => {
+    const r = await sbFetch(env, `check_ins?user_id=eq.${diag.userId}&select=local_date,season_id&order=local_date.desc&limit=400`);
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const days = [...new Set(rows.map((x) => x.local_date).filter(Boolean))].sort().reverse();
+    // 연속 = 오늘(또는 어제)부터 하루씩 이어지는 날 수. 어제까지 인정해야 "오늘 아직 안 한 사람"의 streak 이 0으로 안 보인다.
+    let streak = 0;
+    if (days.length) {
+      const d0 = new Date(days[0] + "T00:00:00Z");
+      const today = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
+      const gap = Math.round((today - d0) / 86400000);
+      if (gap <= 1) {
+        streak = 1;
+        for (let i = 1; i < days.length; i++) {
+          const a = new Date(days[i - 1] + "T00:00:00Z"), b = new Date(days[i] + "T00:00:00Z");
+          if (Math.round((a - b) / 86400000) === 1) streak++; else break;
+        }
+      }
+    }
+    return { streak, totalDays: days.length };
+  }) : null;
+
+  // ③ 포인트 — 원장 합산만. 🔴 가격·소비 규칙은 포인트 세션 정본이고 여기서 흉내 내지 않는다.
+  const points = diag?.userId ? await one(async () => {
+    const r = await sbFetch(env, `point_transactions?user_id=eq.${diag.userId}&select=amount,created_at`);
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const balance = rows.reduce((a, x) => a + (x.amount || 0), 0);
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const recent = rows.filter((x) => x.created_at > since && (x.amount || 0) > 0).reduce((a, x) => a + x.amount, 0);
+    return { balance, earned30d: recent };
+  }) : null;
+
+  // ④ 강독 — 연결된 수강권(정본 = class_verifications, 로그인 이메일 기준)
+  const classes = await one(async () => {
+    // 🔴 book_code 를 '원서 몇 권'으로 분류하지 않는다 — 그 목록(스텔라 시그니처 8권)의 정본은
+    //    소장·구독 세션이고, 여기 사본을 두면 두 곳이 갈라진다(실제로 초안의 7권 목록이 이미 8권 정본과 어긋났다).
+    //    원장 그대로 코드 배열만 넘기고, 의미 부여는 정본을 아는 쪽에서 한다.
+    const books = await verifiedBooksForLogin(env, email);
+    return { owned: books.length, books };
+  });
+
+  // ⑤ 파트너 — 강독 분석 신청 상태·리포트 링크. 🔴 신청 이력이 있는 사람에게만 값이 있다(대다수는 null).
+  //    지금까지 이 정보를 볼 화면이 없어, 링크를 잃으면 재신청을 시도해야만 복구됐다.
+  const partner = await one(async () => {
+    const r = await sbFetch(env, `partner_applications?or=(email_norm.eq."${email}",email.eq."${email}")&select=status,phase,report_token,report_status,report_score&order=submitted_at.desc&limit=1`);
+    if (!r.ok) return null;
+    const a = (await r.json())[0];
+    if (!a) return null;
+    return {
+      status: a.report_status || a.status || null,
+      score: typeof a.report_score === "number" ? a.report_score : null,
+      phase: a.phase || null,
+      reportUrl: a.report_token ? `https://read.literstella.co.kr/api/partner-report?t=${encodeURIComponent(a.report_token)}` : null,
+    };
+  });
+
+  return json({ ok: true, email, diag, challenge, points, classes, partner }, 200, cors);
+}
+
+// ── 네이버 카페 수강권 이관 (핸드오프 2026-08-26 · UI = 07-class codex/cafe-transfer) ──────
+//   비공개 카페(키다리·앤·작은아씨들)의 구 수강생이 카페 별명+네이버 ID 로 신청하면,
+//   운영자가 명단(cafe_rosters, 비공개 402명)과 대조해 승인한다. book_code 는 클라이언트를
+//   신뢰하지 않는다 — campaign → 부여 강좌 매핑은 여기 상수가 정본이다.
+//   🔑 자동 승인(2026-08-27 운영자 지시 "수동 검증 필요 없으면 자동으로"):
+//     명단과 **확실히 1:1로 떨어질 때만** 서버가 바로 승인한다. 나머지는 종전대로 사람이 본다.
+//     근거(실측): campaign 안에서 별명이 유일하다 — 같은 별명 2명 이상 0건·(별명,접두부) 중복 0건.
+//     🔴 단 접두부 2자(59행·14.7%)는 제외한다. 별명은 카페에서 보이므로 2자면 두 번째 요소가
+//        사실상 없다 — 별명만 알면 아무나 통과한다. 4자(343행·85.3%)만 자동으로 연다.
+//     🔴 명단 1행 = 1회 소진(roster_key 유니크). 두 계정이 같은 행으로 승인되면 진짜 수강생이 못 받는다.
+const CAFE_CAMPAIGN_GRANTS = {
+  anne: ["anne"],
+  littlewomen: ["littlewomen1", "littlewomen2"],   // 한 번 승인 = PART 1·2 함께 (운영자 확정)
+  kidari: ["kidari"],
+};
+function maskNaverId(id) {
+  const v = String(id || "");
+  return v.length <= 3 ? v[0] + "**" : v.slice(0, 3) + "*".repeat(Math.min(v.length - 3, 8));
+}
+// NFKC + trim + casefold — 명단 적재와 같은 정규화(다르면 대조가 조용히 어긋난다)
+function cafeNorm(sv) { return String(sv || "").normalize("NFKC").trim().toLowerCase(); }
+
+// 회원 통지 — 정보성 1회. 발송 전 차단목록 3단(7/24 사고 재발 방지), 발송 ID 를 행에 감사.
+async function cafeNotifyMember(env, reqRow, kind) {
+  const email = reqRow.login_email;
+  const T = {
+    received: ["[리터스텔라] 카페 수강 연결 신청이 접수됐어요", "<p>카페 수강 명단과 입력해 주신 정보를 확인한 뒤 알려드릴게요.</p><p>확인은 보통 1~2일 안에 끝나요.</p>"],
+    approved: ["[리터스텔라] 수강 연결이 완료됐어요", `<p>신청하신 수업이 지금 로그인하시는 계정에 연결됐어요.</p><p><a href="https://class-new.literstella.co.kr/library">내 수업에서 바로 확인하기 →</a></p>`],
+    needinfo: ["[리터스텔라] 수강 연결에 추가 확인이 필요해요", `<p>입력해 주신 정보만으로는 명단에서 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>신청 화면에서 내용을 보완해 다시 제출해 주세요.</p>`],
+    rejected: ["[리터스텔라] 수강 연결을 확인하지 못했어요", `<p>카페 수강 명단에서 신청 정보를 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>착오가 있다고 생각되시면 카카오 채널로 알려주세요 — 직접 확인해 드려요.</p>`],
+  }[kind];
+  if (!T) return null;
+  if (await isEmailSuppressed(env, email)) {
+    const recovered = await tryAutoUnsuppress(env, email);
+    if (!recovered) { await notifySuppressedAttempt(env, email); return "suppressed"; }
+  }
+  const sent = await sendResendEmail(env, {
+    to: email,
+    subject: T[0],   // "수강 연결" 포함 → TX_SUBJECT_RE 에 걸려 반송 즉시 알림 대상
+    html: brandEmailHtml(T[1]),
+    idempotencyKey: `cafetr:${reqRow.id}:${kind}`,
+  });
+  return typeof sent === "string" ? sent : (sent ? "sent" : null);
+}
+
+// 승인 시 실제로 여는 것 — 자동·수동이 **같은 함수**를 쓴다(두 벌이면 한쪽만 고쳐져 어긋난다).
+//   ① class_verifications: enrollment_email 은 NULL — 카페 이관엔 증명된 결제 이메일이 없다.
+//      (enrollment_once 유니크를 소비하면 진짜 구매자의 미래 셀프 연결을 영구히 막는다)
+//   ② class_enrollments: source 로 출처 감사. 재로그인 자동연결도 이 행이 받친다.
+async function cafeGrantBooks(env, row) {
+  const codes = CAFE_CAMPAIGN_GRANTS[row.campaign] || [];
+  if (!codes.length) return null;
+  const ins = await sbFetch(env, `class_verifications?on_conflict=email,book_code`, {
+    method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify(codes.map((c) => ({ email: row.login_email, book_code: c, enrollment_email: null }))),
+  });
+  if (!ins.ok) return null;
+  const ins2 = await sbFetch(env, `class_enrollments?on_conflict=email,book_code`, {
+    method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify(codes.map((c) => ({ email: row.login_email, book_code: c, source: `naver-cafe:${row.campaign}:${String(row.id).slice(0, 8)}` }))),
+  });
+  if (!ins2.ok) console.log(JSON.stringify({ evt: "cafe_transfer_enroll_ledger_failed", id: String(row.id).slice(0, 8) }));
+  return codes.join(",");
+}
+
+// POST /api/class/cafe-transfer/request {campaign, cafeNickname, naverId, consentVersion}
+async function cafeTransferRequest(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const campaign = String(b.campaign || "").trim();
+  if (!CAFE_CAMPAIGN_GRANTS[campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+  const cafeNickname = String(b.cafeNickname || "").trim().slice(0, 40);
+  const naverId = String(b.naverId || "").trim().toLowerCase();
+  const consentVersion = String(b.consentVersion || "").trim().slice(0, 20);
+  if (!cafeNickname || !/^[a-z0-9._-]{3,40}$/.test(naverId) || !consentVersion) {
+    return json({ ok: false, error: "bad_request" }, 400, cors);
+  }
+  // 활성 신청 멱등 — 부분 유니크(auth_uid, campaign WHERE pending/needinfo)가 DB 에서도 잡는다
+  const openR = await sbFetch(env, `cafe_transfer_requests?auth_uid=eq.${user.id}&campaign=eq.${campaign}&status=in.(pending,needinfo)&select=id,status&limit=1`);
+  if (!openR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const open = (await openR.json())[0];
+  // 명단 자동 대조 — 정확 별명 + 입력 전체 ID 가 접두부로 시작(핸드오프 규칙). 접두부만 일치는 후보 아님.
+  let rosterMatch = "none";
+  let autoOk = false;          // 자동 승인 가능 여부
+  let rosterKey = null;        // 소진할 명단 행(campaign:별명)
+  try {
+    const nickNorm = cafeNorm(cafeNickname);
+    const rr = await sbFetch(env, `cafe_rosters?campaign=eq.${campaign}&nickname_norm=eq.${encodeURIComponent(nickNorm)}&select=id_prefix&limit=5`);
+    if (rr.ok) {
+      const rows = await rr.json();
+      const hits = rows.filter((x) => naverId.startsWith(String(x.id_prefix || "").toLowerCase()));
+      if (hits.length) rosterMatch = "exact";
+      // 🔴 자동은 **딱 하나만 맞을 때**. 별명이 유일하다는 실측이 전제이고, 그래도 방어적으로 센다.
+      //    접두부 2자는 별명만 알면 통과하므로 자동에서 뺀다(사람이 본다).
+      if (hits.length === 1 && String(hits[0].id_prefix || "").length >= 4) {
+        autoOk = true;
+        rosterKey = `${campaign}:${nickNorm}`;
+      }
+    }
+  } catch { /* 대조 실패 = none 으로 접수 — 사람이 본다 */ }
+  const payload = {
+    login_email: user.email, campaign, cafe_nickname: cafeNickname, naver_id: naverId,
+    consent_version: consentVersion, roster_match: rosterMatch, updated_at: new Date().toISOString(),
+  };
+  let row;
+  if (open && open.status === "needinfo") {
+    const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${open.id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...payload, status: "pending" }) });
+    if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+    row = (await up.json())[0];
+  } else if (open) {
+    return json({ ok: true, already: true, request: { status: open.status, campaign } }, 200, cors);
+  } else {
+    const ins = await sbFetch(env, `cafe_transfer_requests`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ auth_uid: user.id, consent_at: new Date().toISOString(), ...payload }) });
+    if (ins.status === 409) return json({ ok: true, already: true, request: { status: "pending", campaign } }, 200, cors);
+    if (!ins.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+    row = (await ins.json())[0];
+  }
+
+  // ── 자동 승인 — 명단과 1:1 로 떨어지고 접두부가 충분히 길 때만 ──────────────
+  //   실패하면 조용히 pending 으로 남는다(사람이 본다). 자동이 막히는 것보다 잘못 여는 게 나쁘다.
+  if (autoOk && rosterKey) {
+    // 명단 행 선점 — 유니크 인덱스(roster_key WHERE approved)가 두 번째 시도를 409 로 막는다.
+    const claim = await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, {
+      method: "PATCH", headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ roster_key: rosterKey, status: "approved", decided_by: "auto", decided_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+    });
+    if (claim.ok) {
+      const claimed = (await claim.json())[0];
+      const books = await cafeGrantBooks(env, claimed);
+      if (books) {
+        await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, {
+          method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ granted_books: books }),
+        }).catch(() => {});
+        row = { ...claimed, granted_books: books };
+        try { const mid = await cafeNotifyMember(env, row, "approved"); if (mid) await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ approved_email_id: mid }) }); } catch { /* 비차단 */ }
+        console.log(JSON.stringify({ evt: "cafe_transfer_auto_approved", id: String(row.id).slice(0, 8), campaign, books }));
+        return json({ ok: true, request: { status: "approved", campaign, adminNote: null, grantedBooks: books } }, 200, cors);
+      }
+      // 원장 넣기가 실패했으면 승인을 되돌린다 — '승인됐다는데 안 열림'이 가장 나쁜 상태다.
+      await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ status: "pending", roster_key: null, decided_by: null, decided_at: null }),
+      }).catch(() => {});
+      console.log(JSON.stringify({ evt: "cafe_transfer_auto_rollback", id: String(row.id).slice(0, 8), campaign }));
+    } else {
+      // 409 = 다른 계정이 이미 그 명단 행으로 승인받음 → 사람이 본다(도용 가능성)
+      console.log(JSON.stringify({ evt: "cafe_transfer_auto_claim_conflict", id: String(row.id).slice(0, 8), campaign, status: claim.status }));
+    }
+  }
+  // 통지 2건 — 실패해도 접수는 성립(비차단). 발송 ID 는 행에 감사.
+  const audit = {};
+  try { const mid = await cafeNotifyMember(env, row, "received"); if (mid) audit.member_email_id = mid; } catch { /* 비차단 */ }
+  try {
+    if (env.ADMIN_EMAIL) {
+      const rid = String(row.id).slice(0, 8);
+      const aid = await sendResendEmail(env, {
+        to: env.ADMIN_EMAIL,
+        subject: `[카페 수강 연결] ${campaign} · ${rid} · 명단 ${rosterMatch === "exact" ? "일치" : "불일치"}`,
+        html: `<p>네이버 카페 수강 이관 신청이 접수됐어요.</p>
+<ul><li>요청: <b>${rid}</b> · 강좌: <b>${campaign}</b></li><li>로그인: ${maskEmailAddr(user.email)}</li><li>카페 별명: <b>${escHtml(cafeNickname)}</b> · 네이버 ID: ${maskNaverId(naverId)}</li><li>명단 자동 대조: <b>${rosterMatch === "exact" ? "✅ 정확 일치" : "❌ 일치 없음"}</b></li></ul>
+<p><a href="https://class-new.literstella.co.kr/admin">관리자 → 카페 이관 탭에서 검토 →</a></p>`,
+        idempotencyKey: `cafetr:${row.id}:admin`,
+      });
+      if (typeof aid === "string") audit.admin_email_id = aid;
+    }
+  } catch { /* 비차단 */ }
+  if (Object.keys(audit).length) {
+    try { await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(audit) }); } catch { /* 감사 기록 실패는 비차단 */ }
+  }
+  console.log(JSON.stringify({ evt: "cafe_transfer_request", id: String(row.id).slice(0, 8), campaign, match: rosterMatch }));
+  return json({ ok: true, request: { status: row.status, campaign, adminNote: null } }, 200, cors);
+}
+
+// GET /api/class/cafe-transfer/mine?campaign=
+async function cafeTransferMine(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const campaign = String(new URL(req.url).searchParams.get("campaign") || "").trim();
+  if (!CAFE_CAMPAIGN_GRANTS[campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+  const r = await sbFetch(env, `cafe_transfer_requests?auth_uid=eq.${user.id}&campaign=eq.${campaign}&select=status,admin_note,updated_at&order=created_at.desc&limit=1`);
+  if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const row = (await r.json())[0];
+  if (!row) return json({ ok: true, request: null }, 200, cors);
+  // adminNote 는 보완/거절일 때만 회원에게 (형제 구현과 동일 정책 — approved 안내문 오염 방지)
+  const showNote = row.status === "needinfo" || row.status === "rejected";
+  return json({ ok: true, request: { status: row.status, campaign, adminNote: showNote ? (row.admin_note || null) : null } }, 200, cors);
+}
+
+// 밀린 승인 통지 재발송 — 승인은 됐는데 메일이 안 나간 행을 찾아 보낸다.
+//   왜 필요한가: 2026-08-27 자동 승인을 켜면서 이미 쌓여 있던 6건을 SQL 로 소급 승인했는데,
+//   그 경로는 워커를 안 타서 통지가 빠졌다. 회원은 수업이 열린 줄 모른다.
+//   멱등: member_email_id 가 비어 있는 행만 + Resend idempotencyKey 로 이중 발송이 막힌다.
+//   🔴 라일라 알림은 여기서 안 만든다 — 클래스 앱 GrantWelcomeModal 이 로그인 시 신규 소유를
+//      감지해 addTellaEvent 를 쏜다('이메일=라일라' 규칙의 기존 구현). 서버가 또 만들면 두 번 뜬다.
+async function cafeResendMissingNotices(env) {
+  // 🔴 member_email_id 로 판별하면 안 된다 — 그건 **접수 안내** 발송 ID 라 신청 시점에 이미 차 있다.
+  //   승인 통지 여부는 approved_email_id 로 따로 본다(2026-08-27 교정).
+  const r = await sbFetch(env, `cafe_transfer_requests?status=eq.approved&approved_email_id=is.null&select=*&limit=50`);
+  if (!r.ok) return { checked: 0, sent: 0 };
+  const rows = await r.json();
+  let sent = 0;
+  for (const row of rows) {
+    try {
+      const mid = await cafeNotifyMember(env, row, "approved");
+      if (mid) {
+        sent += 1;
+        await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, {
+          method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ approved_email_id: mid }),
+        }).catch(() => {});
+      }
+    } catch { /* 한 건 실패가 나머지를 막지 않는다 */ }
+  }
+  if (rows.length) console.log(JSON.stringify({ evt: "cafe_resend_missing_notices", checked: rows.length, sent }));
+  return { checked: rows.length, sent };
+}
+
+// GET /api/admin/cafe-transfer-requests?status=&campaign=
+async function adminCafeTransferList(req, env, cors) {
+  if (!(await requireAdminUser(req, env))) return json({ ok: false, error: "not_admin" }, 403, cors);
+  const url = new URL(req.url);
+  const st = String(url.searchParams.get("status") || "").trim();
+  const camp = String(url.searchParams.get("campaign") || "").trim();
+  const f = [];
+  if (["pending", "needinfo", "approved", "rejected"].includes(st)) f.push(`status=eq.${st}`);
+  if (CAFE_CAMPAIGN_GRANTS[camp]) f.push(`campaign=eq.${camp}`);
+  // 목록을 여는 김에 밀린 승인 통지를 보낸다(멱등). 운영자가 결과를 확인하러 오는 자리다.
+  let resent = { checked: 0, sent: 0 };
+  try { resent = await cafeResendMissingNotices(env); } catch { /* 비차단 */ }
+  const r = await sbFetch(env, `cafe_transfer_requests?select=id,campaign,status,created_at,login_email,cafe_nickname,naver_id,roster_match,admin_note,granted_books${f.length ? "&" + f.join("&") : ""}&order=created_at.desc&limit=100`);
+  if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const rows = (await r.json()).map((x) => ({
+    id: x.id, campaign: x.campaign, status: x.status, created_at: x.created_at,
+    login_email: x.login_email, cafe_nickname: x.cafe_nickname,
+    naver_id_masked: `${maskNaverId(x.naver_id)}${x.roster_match === "exact" ? " · 명단일치✅" : " · 명단불일치❌"}`,
+    admin_note: x.admin_note, granted_books: x.granted_books,
+  }));
+  return json({ ok: true, requests: rows, resentNotices: resent.sent }, 200, cors);
+}
+
+// POST /api/admin/cafe-transfer-request/decide {id, action:'approve'|'needinfo'|'reject', adminNote}
+async function adminCafeTransferDecide(req, env, cors) {
+  const admin = await requireAdminUser(req, env);
+  if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
+  let body; try { body = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const id = String(body.id || "").trim();
+  const action = String(body.action || "").trim();
+  const adminNote = String(body.adminNote || "").trim().slice(0, 500);   // 🔴 형제(class-link)는 'note' — 여기만 adminNote
+  if (!id || !["approve", "needinfo", "reject"].includes(action)) return json({ ok: false, error: "bad_request" }, 400, cors);
+  const rowR = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}&select=*&limit=1`);
+  if (!rowR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const row = (await rowR.json())[0];
+  if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
+  let grantedBooks = null;
+  if (action === "approve") {
+    if (!CAFE_CAMPAIGN_GRANTS[row.campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+    // 자동과 **같은 함수**를 쓴다 — 원장 두 벌이면 한쪽만 고쳐져 어긋난다.
+    grantedBooks = await cafeGrantBooks(env, row);
+    if (!grantedBooks) return json({ ok: false, error: "grant_failed" }, 502, cors);
+  }
+  const status = action === "approve" ? "approved" : action === "needinfo" ? "needinfo" : "rejected";
+  // 수동 승인도 명단 행을 소진 표시한다 — 자동과 같은 열쇠라 두 경로가 서로를 막는다.
+  const rosterKeyManual = status === "approved" && row.roster_match === "exact"
+    ? `${row.campaign}:${cafeNorm(row.cafe_nickname)}` : null;
+  const patch = { status, admin_note: adminNote || null, granted_books: grantedBooks, decided_by: admin.email, decided_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...(rosterKeyManual ? { roster_key: rosterKeyManual } : {}) };
+  const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
+  if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+  const updated = (await up.json())[0];
+  try {
+    const mid = await cafeNotifyMember(env, updated, status);
+    // 승인 통지는 approved_email_id 에 — 접수 통지(member_email_id)를 덮지 않는다.
+    if (mid) await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(status === "approved" ? { approved_email_id: mid } : { member_email_id: mid }) });
+  } catch { /* 통지 실패 비차단 — 상태는 관리자 화면·mine 조회로 보인다 */ }
+  console.log(JSON.stringify({ evt: "cafe_transfer_decide", id: id.slice(0, 8), action, by: admin.email, books: grantedBooks || "-" }));
+  return json({ ok: true }, 200, cors);
+}
+
+// ── 백업 이메일 (운영자 지시 2026-08-26) — 아이디·이메일 분실 대비 ─────────────────
+//   원리: 백업 이메일도 **소유 증명 후에만** 등록된다(OTP 6자리를 그 주소로 보내 확인).
+//   증명 없이 등록을 허용하면 남의 계정에 내 백업메일을 심는 탈취 경로가 된다.
+//   저장은 account_recovery(service_role 전용, RLS 정책 0) — users 컬럼은 anon INSERT 가
+//   상속돼 위조 가능해서 쓰지 않는다(2026-08-26 마이그레이션 주석 참조).
+async function backupEmailSendCode(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const backupEmail = String(b.backupEmail || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(backupEmail) || backupEmail.length > 254) return json({ ok: false, error: "bad_email" }, 400, cors);
+  if (backupEmail === user.email) return json({ ok: false, error: "same_as_login", message: "로그인 이메일과 다른 주소를 백업으로 등록해 주세요." }, 400, cors);
+  const allowed = await otpSendAllowed(env, backupEmail);
+  if (!allowed.ok) return json({ ok: false, error: "too_many_requests" }, 429, cors);
+  if (await isEmailSuppressed(env, backupEmail)) {
+    const recovered = await tryAutoUnsuppress(env, backupEmail);
+    if (!recovered) { await notifySuppressedAttempt(env, backupEmail); return json({ ok: false, error: "suppressed", message: "이 주소로는 메일이 전달되지 않아요. 다른 주소를 써 주세요." }, 422, cors); }
+  }
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
+  const exp = Date.now() + OTP_TTL_MS;
+  // 🔴 프리픽스 bkmail: — 일반 OTP(code:)와 서명 공간을 분리해 코드 재사용(수강 인증 등) 차단
+  const sig = await hmacHex(env.OTP_SECRET, `bkmail:${user.id}:${backupEmail}:${code}:${exp}`);
+  // 🔴 이 줄이 없어서 백업 이메일 등록이 **한 번도 성공한 적이 없다**(2026-08-26 기능 출시 이후 내내).
+  //   backupEmailConfirm 은 otpGuardConsume 을 부르는데, 발급 때 카운터를 안 열면 키가 없어
+  //   "이미 사용됨"으로 즉시 거절된다. 발급과 소비는 **항상 짝으로** 있어야 한다.
+  await otpGuardIssue(env, `${exp}.${sig}`, Math.max(60000, exp - Date.now()));
+  const sent = await sendResendEmail(env, {
+    to: backupEmail,
+    subject: "[리터스텔라] 백업 이메일 인증 코드",
+    html: brandEmailHtml(`<div style="font-size:17px;font-weight:800;margin-bottom:10px;">백업 이메일 인증 코드</div><p style="margin:0 0 14px;color:#5a5446;">10분 안에 아래 코드를 입력해 주세요. 이 주소는 계정을 잃었을 때 찾는 용도로만 쓰여요.</p><div style="font-size:32px;font-weight:900;letter-spacing:9px;color:#c8a84b;text-align:center;padding:16px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:13px;">${code}</div>`),
+  });
+  if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
+  return json({ ok: true, token: `${exp}.${sig}` }, 200, cors);
+}
+
+async function backupEmailConfirm(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const backupEmail = String(b.backupEmail || "").trim().toLowerCase();
+  const code = String(b.code || "").trim();
+  const [expStr, sig] = String(b.token || "").split(".");
+  const exp = Number(expStr);
+  if (!EMAIL_RE.test(backupEmail) || !/^\d{6}$/.test(code) || !exp || !sig || Date.now() > exp) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  const guard = await otpGuardConsume(env, b.token);
+  if (guard) return json({ ok: false, ...guard }, 400, cors);
+  const expected = await hmacHex(env.OTP_SECRET, `bkmail:${user.id}:${backupEmail}:${code}:${exp}`);
+  if (!timingSafeEq(expected, sig)) return json({ ok: false, error: "invalid_code" }, 400, cors);
+  // 🔴 여기서 태우지 않는다(2026-08-28) — classVerifyOtp 와 **똑같은 병**이 여기 남아 있었다.
+  //   저장이 실패하면 맞는 코드가 이미 재가 되고, 재시도 시 "이미 사용됐어요"가 뜬다.
+  //   소각은 저장 성공을 확인한 뒤에 한다.
+  const up = await sbFetch(env, `account_recovery?on_conflict=auth_uid`, {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify([{ auth_uid: user.id, primary_email: user.email, backup_email: backupEmail, verified_at: new Date().toISOString(), updated_at: new Date().toISOString() }]),
+  });
+  // 우리 쪽 저장 실패 — 코드는 살려 둔다. 같은 코드로 다시 시도할 수 있어야 한다.
+  if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+  await otpGuardBurn(env, b.token);                            // 결과 확정 = 1회용 소진
+  console.log(JSON.stringify({ evt: "backup_email_set", uid: String(user.id).slice(0, 8) }));
+  return json({ ok: true, backupEmailMasked: maskEmailAddr(backupEmail) }, 200, cors);
+}
+
+// GET /api/me/backup-email — 설정 화면 표시용(마스킹)
+async function backupEmailGet(req, env, cors) {
+  const user = await requireUser(req, env);
+  if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
+  const r = await sbFetch(env, `account_recovery?auth_uid=eq.${user.id}&select=backup_email,verified_at&limit=1`);
+  if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
+  const row = (await r.json())[0];
+  return json({ ok: true, backupEmailMasked: row ? maskEmailAddr(row.backup_email) : null, verifiedAt: row?.verified_at || null }, 200, cors);
+}
+
+// POST /api/auth/find-by-backup {backupEmail} — 아이디(로그인 이메일) 찾기. 무인증 공개 라우트.
+//   응답은 마스킹만: 지식 기반(주소를 안다) 단독으론 원문을 안 준다. 열거 방지로 항상 ok.
+async function findByBackupEmail(req, env, cors) {
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const backupEmail = String(b.backupEmail || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(backupEmail)) return json({ ok: false, error: "bad_email" }, 400, cors);
+  const allowed = await otpSendAllowed(env, `findbk:${backupEmail}`);   // 열거 속도 제한(같은 레이트리밋 재사용)
+  if (!allowed.ok) return json({ ok: false, error: "too_many_requests" }, 429, cors);
+  const r = await sbFetch(env, `account_recovery?backup_email=eq.${encodeURIComponent(backupEmail)}&select=primary_email&limit=5`);
+  const rows = r.ok ? await r.json() : [];
+  return json({ ok: true, found: rows.map((x) => maskEmailAddr(x.primary_email)) }, 200, cors);
+}
+
 async function classAutoLink(req, env, cors) {
   const user = await requireUser(req, env);
   if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
@@ -1786,12 +2628,17 @@ async function classLinkRequestSubmit(req, env, cors) {
   try { match = await classLinkMatch(env, { loginEmail: user.email, claimedEmail, name, phone }); }
   catch { return json({ ok: false, error: "upstream" }, 502, cors); }
   if (match.type === "enrolled") return json({ ok: false, error: "already_enrolled", email: match.email }, 200, cors);
-  if (match.type === "candidate") return json({ ok: false, error: "candidate_found", masked: match.masked }, 200, cors);
+  // 🔴 mailUnreachable(2026-08-26): 옛 수강 이메일이 죽어 OTP 메일을 못 받는 사람은
+  //   후보 안내로 돌려보내면 영원히 막힌다(그 이메일로 인증하라는 안내 = 못 하는 일).
+  //   그 경우 접수를 허용하고, 서버 대조 결과(roster_match)를 신청에 실어 관리자가 본다.
+  const mailUnreachable = body.mailUnreachable === true;
+  if (match.type === "candidate" && !mailUnreachable) return json({ ok: false, error: "candidate_found", masked: match.masked }, 200, cors);
   // 열린 신청 1건 원칙(멱등) — needinfo면 보완 재제출로 갱신
   const openR = await sbFetch(env, `class_link_requests?auth_uid=eq.${user.id}&status=in.(pending,needinfo)&select=id,status&limit=1`);
   if (!openR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const open = (await openR.json())[0];
-  const payload = { login_email: user.email, claimed_email: claimedEmail, name, phone, courses, paid_at: paidAt, order_info: orderInfo, updated_at: new Date().toISOString() };
+  const payload = { login_email: user.email, claimed_email: claimedEmail, name, phone, courses, paid_at: paidAt, order_info: orderInfo, updated_at: new Date().toISOString(),
+    roster_match: match.rosterMatch ? { via: "liveklass-phone", unreachable: mailUnreachable, hits: match.rosterMatch } : null };
   let reqId = open?.id || null;
   if (open && open.status === "pending") return json({ ok: true, already: true, id: open.id, status: "pending" }, 200, cors);
   if (open && open.status === "needinfo") {
@@ -1932,6 +2779,9 @@ export default {
 
     // 8/1 이후 LiveKlass 신청자 수강 연결 신청 (수동 검토 — task-20260817-1650)
     // 소셜 로그인 자동 연결 — 로그인 직후 1회 호출(멱등). 실패해도 기존 OTP 경로가 그대로 폴백.
+    if (path === "/api/me/overview") {
+      return meOverview(req, env, cors);
+    }
     if (path === "/api/class/auto-link") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return classAutoLink(req, env, cors);
@@ -1951,9 +2801,42 @@ export default {
     if (path === "/api/admin/class-link-requests") {
       return adminClassLinkList(req, env, cors);
     }
-    if (path === "/api/admin/class-link-request/decide") {
+    if (path === "/api/admin/class-link-request/decide") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return adminClassLinkDecide(req, env, cors);
+    }
+
+    // ── 카페 수강권 이관 (2026-08-26) — 관리자 GET 이 있어 /api/admin/ prefix 블록(POST 강제) 위에 둔다
+    if (path === "/api/class/cafe-transfer/request") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
-      return adminClassLinkDecide(req, env, cors);
+      return cafeTransferRequest(req, env, cors);
+    }
+    if (path === "/api/class/cafe-transfer/mine") {
+      return cafeTransferMine(req, env, cors);
+    }
+    if (path === "/api/admin/cafe-transfer-requests") {
+      return adminCafeTransferList(req, env, cors);
+    }
+    if (path === "/api/admin/cafe-transfer-request/decide") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return adminCafeTransferDecide(req, env, cors);
+    }
+    // ── 백업 이메일 (2026-08-26) ──
+    if (path === "/api/me/backup-email") {
+      if (req.method === "GET") return backupEmailGet(req, env, cors);
+      return json({ ok: false, error: "method" }, 405, cors);
+    }
+    if (path === "/api/me/backup-email/send-code") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return backupEmailSendCode(req, env, cors);
+    }
+    if (path === "/api/me/backup-email/confirm") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return backupEmailConfirm(req, env, cors);
+    }
+    if (path === "/api/auth/find-by-backup") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return findByBackupEmail(req, env, cors);
     }
 
     // 본인인증(통합인증) 결과 조회 — PORTONE_API_SECRET 필요. 플래그 없이 열림(id=unguessable UUID).
@@ -1971,6 +2854,17 @@ export default {
     // 라이프사이클 정보성 메일 (가입·인증·완독·다이어리·Lyra 등). RESEND_API_KEY 필요.
     //   본인 활동 기반 정보성 → 광고 아님. 클라가 자기 이메일+키+data로 호출(멱등은 클라 localStorage).
     //   ⚠️ 서버 rate-limit은 WAF/KV 백로그(OTP와 동일 posture). 무료티어 발송한도가 1차 방어.
+    // 수신거부 원클릭(RFC 8058) — 인증 없이 토큰만으로 동작해야 한다(메일 클라이언트가 부른다).
+    if (path === "/api/unsub") {
+      if (req.method !== "GET" && req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return unsubRoute(req, env, cors);
+    }
+
+    // 내 수신 설정 — 계정 센터가 네 갈래를 한 화면에서 읽고 쓴다.
+    if (path === "/api/me/email-prefs") {
+      return myEmailPrefs(req, env, cors);
+    }
+
     if (path === "/api/lifecycle-email") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return lifecycleEmail(req, env, cors);
