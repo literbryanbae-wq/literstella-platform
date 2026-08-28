@@ -2,3 +2,18 @@ node_modules/
 .wrangler/
 .dryrun/
 *.log
+
+# 🔴 자격증명은 절대 커밋되지 않게 (2026-08-28).
+#   이 폴더엔 openrouter_api.txt 처럼 실키가 놓여 있는데 종전 규칙으론 안 막혔다.
+#   공유 워킹트리라 다른 세션의 `git add -A` 한 번이면 그대로 올라간다.
+#   파일은 그대로 두고 커밋만 막는다 — 로컬 작업엔 지장 없다.
+*_api.txt
+*_key.txt
+*.key
+*.pem
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+secrets*.json
