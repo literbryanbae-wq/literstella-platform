@@ -700,20 +700,31 @@ function otpEmailHtml(code, issuedAt) {
 //   그러면 `Authorization: Bearer re_xxx\n` 이 되어 **Resend 에 닿기도 전에 400** 이 난다
 //   (Resend API 로그엔 요청이 아예 안 남고, 워커는 detail 빈 400 만 본다 — 원인 추적이 어렵다).
 //   같은 함정을 audiogate 가 이미 signSecret() 으로 방어하고 있었다 — 여기에도 같은 처리를 둔다.
-function resendKey(env) {
-  const s = String(env.RESEND_API_KEY || "");
+// 🔴 인증 메일과 마케팅 메일의 **발송 계정**을 가른다(2026-08-28).
+//   Resend 의 차단 목록·일일 한도·도메인 평판은 전부 **계정 단위**다. 지금은 키가 하나라,
+//   마케팅 대량 발송에서 반송이 나면 그 주소의 **로그인 인증 메일까지** 막힌다.
+//   실제로 7/24 대량 발송 반송으로 OTP 가 3주간 끊겼다(memory: email_suppression_incident).
+//   RESEND_FROM_MARKETING 으로 **발신 주소만** 갈라 놨는데, 그건 계정을 안 가르므로 효과가 없다.
+//   → 인증 계열은 RESEND_API_KEY_AUTH 를 쓴다. **없으면 기존 키로 폴백**하므로
+//     시크릿을 넣기 전까지 동작은 지금과 완전히 같다(무위험 배선).
+//   켜는 법: 별도 Resend 계정 생성 → 도메인 인증 → `npx wrangler secret put RESEND_API_KEY_AUTH`
+function resendKey(env, lane) {
+  const raw = lane === "auth" && env.RESEND_API_KEY_AUTH ? env.RESEND_API_KEY_AUTH : env.RESEND_API_KEY;
+  const s = String(raw || "");
   let out = "";
   for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c !== 65279 && c > 32) out += s[i]; }
   return out;
 }
 
-async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
-  if (!resendKey(env)) return false;
-  const from = env.RESEND_FROM || "LiterStella <onboarding@resend.dev>"; // 도메인 인증 후 인증@literstella.co.kr
+// lane="auth" = 로그인·인증코드·비밀번호 재설정처럼 **못 가면 서비스가 멈추는** 메일.
+//   그런 메일은 마케팅과 같은 계정에 두지 않는다(위 resendKey 주석 참조).
+async function sendResendEmail(env, { to, subject, html, idempotencyKey, lane }) {
+  if (!resendKey(env, lane)) return false;
+  const from = (lane === "auth" && env.RESEND_FROM_AUTH) || env.RESEND_FROM || "LiterStella <onboarding@resend.dev>"; // 도메인 인증 후 인증@literstella.co.kr
   // 429/5xx 지수 백오프 재시도 2회 + 실패 로깅(발송 감사 2026-07-20 P0: 대량 유입 시 순간 레이트 초과가 조용한 send_failed로 전락하던 것).
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
-      const headers = { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json" };
+      const headers = { Authorization: `Bearer ${resendKey(env, lane)}`, "Content-Type": "application/json" };
       if (idempotencyKey) headers["Idempotency-Key"] = String(idempotencyKey).slice(0, 256);
       const r = await fetch("https://api.resend.com/emails", {
         method: "POST",
@@ -748,11 +759,12 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey }) {
 //      사용자는 10분 뒤 '코드 만료' 문구만 봤다(원인 정보 0). 그래서 보내기 전에 물어본다.
 //   ⚠️ fail-open: 조회가 실패(401·5xx·네트워크)하면 "차단"으로 단정하지 않고 발송을 진행한다
 //      — 조회 장애가 로그인 전면 차단으로 번지면 안 된다.
-async function isEmailSuppressed(env, email) {
-  if (!resendKey(env)) return false;
+// lane 을 받는다 — 차단 목록은 계정 단위라, 인증 레인의 차단 여부는 인증 계정에서 물어야 맞다.
+async function isEmailSuppressed(env, email, lane) {
+  if (!resendKey(env, lane)) return false;
   try {
     const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
-      headers: { Authorization: `Bearer ${resendKey(env)}` },
+      headers: { Authorization: `Bearer ${resendKey(env, lane)}` },
     });
     if (r.status === 404) return false;  // 목록에 없음 = 정상 주소
     if (r.ok) return true;               // 200 = 차단 중 → 보내봐야 안 간다
@@ -1516,7 +1528,7 @@ async function otpSend(req, env, cors) {
   const allowed = await otpSendAllowed(env, email);
   if (!allowed.ok) return json({ ok: false, error: "too_many_requests", message: "인증 코드를 너무 자주 요청했어요. 잠시 후 다시 시도해 주세요." }, 429, cors);
   // 🔴 보내기 전에 "이 주소로 메일이 나갈 수 있나"를 먼저 묻는다(2026-08-18). 못 나가면 거짓 성공 대신 원인을 알린다.
-  if (await isEmailSuppressed(env, email)) {
+  if (await isEmailSuppressed(env, email, "auth")) {
     // 먼저 스스로 풀어본다 — 7/24 사고분은 대부분 여기서 조용히 해결돼 사용자는 아무것도 눈치채지 못한다.
     const recovered = await tryAutoUnsuppress(env, email);
     if (!recovered) {
@@ -1542,6 +1554,7 @@ async function otpSend(req, env, cors) {
     to: email,
     subject: `[리터스텔라] 이메일 인증 코드 · ${issuedAt}`,
     html: otpEmailHtml(code, issuedAt),
+    lane: "auth",          // 마케팅이 무슨 일을 겪든 이 메일은 살아 있어야 한다
   });
   if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
   const token = `${exp}.${sig}`;
