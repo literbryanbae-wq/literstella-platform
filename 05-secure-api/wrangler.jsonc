@@ -5,20 +5,52 @@
   "compatibility_date": "2026-06-17",
   "compatibility_flags": ["nodejs_compat"],
 
+  // OTP 무차별 대입 방어용 상태 저장소(2026-08-12).
+  //   왜 필요한가: OTP 토큰이 `exp.HMAC(email:code:exp)` 라 **서버에 상태가 없었다** — 토큰을 받은 뒤
+  //   6자리 100만 가지를 대입하면 뚫린다. 남의 명단 이메일 하나만 알면 그 사람 소장 강좌가 공격자 계정으로
+  //   넘어가고, 원 소유자는 alreadyLinked 로 영구히 막힌다. 시도 횟수를 적을 곳이 없어 코드로는 못 막았다.
+  //   → 토큰 자체의 해시를 키로 삼아 시도 횟수를 센다(토큰 형식 불변 = 클라 무수정).
+  "kv_namespaces": [
+    { "binding": "OTP_GUARD", "id": "4d63990bf864475fb20f5847ac1c016e" }
+  ],
+
+  // 발송 제한은 KV 로 못 한다 — **KV 는 "키 없음"을 최대 60초 캐시**해서(negative caching)
+  //   첫 발송 뒤에도 읽기가 계속 null 을 본다(2026-08-12 실측: 4연속 발송 전부 통과).
+  //   시도 카운터는 발급 시점에 키가 이미 생기므로 영향을 안 받아 정상 작동한다 — 같은 KV 인데 결과가 갈린 이유.
+  //   → 발송 제한만 전용 Rate Limiting 바인딩으로. 이메일당 60초에 3통.
+  "ratelimits": [
+    { "name": "OTP_SEND_LIMIT", "namespace_id": "1001", "simple": { "limit": 3, "period": 60 } }
+  ],
+
+  // 인증·계정 복구·수강 연결 메일은 진단 Worker의 비공개 RPC로 보낸다.
+  // Resend 인증 키는 target Worker 한 곳만 소유한다(시크릿 사본 드리프트 방지).
+  "services": [
+    {
+      "binding": "AUTH_EMAIL_SERVICE",
+      "service": "literstella-reading-diagnosis",
+      "entrypoint": "AuthEmailService"
+    }
+  ],
+
   // ⚠️ 미배포 스캐폴딩. 포트원 승인 후 배포. 모든 위험 기능은 아래 플래그(기본 false) 뒤에 있음.
   "vars": {
-    "ADMIN_API_ENABLED": "false",   // #8b 관리자 service_role 라우트 — 켤 때 true
-    "PAYMENT_ENABLED": "false",      // 포트원 결제 라우트 — 켤 때 true
+    "ADMIN_API_ENABLED": "true",    // #8b 관리자 service_role 라우트 — ON(총괄 2026-08-14, 운영자 지시로 강의 알림 메일 발송 경로 개방)
+    //   🔴 이 라우트는 전부 **관리자 이메일 OTP**(/api/admin/auth) 뒤에 있다 — 플래그만으로는 아무도 발송 못 한다.
+    "CONTENT_SEND_ENABLED": "true", // 콘텐츠 알림 실발송(mode:"send") 허용 — dry/test 는 이 값과 무관
+    "PAYMENT_ENABLED": "true",       // 결제 라우트 ON (2026-07-20 토스 다이렉트 전환 — toss-confirm 활성. 포트원 라우트는 코드상 휴면)
+    "CONTENT_POINTS_ENABLED": "true",  // SQL/RLS/RPC 검증 완료(2026-07-29): 카탈로그 활성 회차만 해금
     "SUPABASE_URL": "https://bvhkvucsoetktoxzupwt.supabase.co",
     "ADMIN_EMAIL": "literbryanbae@gmail.com",
     // OTP·알림 메일 발신자 — Resend 인증한 @literstella.co.kr 도메인이라 임의 수신자에게 도달.
     // (미설정 시 코드 폴백 onboarding@resend.dev = 본인 메일만). local-part는 원하면 변경 가능.
     "RESEND_FROM": "리터스텔라 <noreply@literstella.co.kr>",
+    "RESEND_STELLA_OPTIN_SEGMENT_ID": "c0cfb2fe-eaf9-47b7-9cf2-c5122192da1a",
     // 포트원 공개값(비밀 아님 — 프론트에도 노출되는 값)
     "PORTONE_STORE_ID": "store-464ff242-c317-4693-96c2-1052658e14b7",
     "PORTONE_BILLING_CHANNEL_KEY": "channel-key-3917d309-e69b-44b6-a0d5-2c7e3b727165",
-    // CORS 허용 Origin (쉼표구분) — 프론트 도메인만
-    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr"
+    // CORS 허용 Origin (쉼표구분) — 프론트 도메인만. 클래스 앱(강독 이관, 2026-07-18) 추가:
+    //   class-new=스테이징 · class=컷오버 후 · pages.dev=배포 프리뷰 QA
+    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev"
   },
 
   // 배포 시 secret으로 주입 (wrangler secret put <NAME>):
@@ -27,11 +59,13 @@
   //   ADMIN_SECRET               — 관리자 세션 토큰 서명용
   //   PORTONE_API_SECRET         — 포트원 V2 서버 API Secret
   //   PORTONE_WEBHOOK_SECRET     — 포트원 웹훅 서명 검증
-  //   RESEND_API_KEY             — 회원가입 OTP·문의 메일 발송(diag Worker 키 재사용 가능) ★회원가입 필수
+  //   RESEND_API_KEY             — 대량 캠페인/마케팅 전용. 인증 키를 이 Worker에 복사하지 말 것.
+  // 인증 메일 필수 의존성은 위 AUTH_EMAIL_SERVICE 바인딩이다.
   //   RESEND_FROM (선택, var/secret) — 발신자. 미설정 시 onboarding@resend.dev(무료=본인메일만). 도메인 인증 후 인증@literstella.co.kr
 
-  // 자동갱신 Cron (PAYMENT_ENABLED + 빌링키 도입 후 주석 해제):
-  // "triggers": { "crons": ["0 0 * * *"] },
+  // 2026-08-01 회원 안내 1회성 발송. scheduled 핸들러가 연도를 검사하므로 이후 연도에는 no-op.
+  // 발송 완료 후 두 Cron을 제거한다. 자동갱신 Cron은 별도 도입 시 추가.
+  "triggers": { "crons": [] },
 
   "observability": { "enabled": true }
 }

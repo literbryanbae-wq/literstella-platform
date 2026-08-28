@@ -188,7 +188,7 @@ async function adminOtpRequest(req, env, cors) {
   const sig = await hmacHex(env.OTP_SECRET, `admin-code:${email}:${code}:${exp}`);
   const token = `${exp}.${sig}`;
   const html = brandEmailHtml(`<div style="font-size:18px;font-weight:800;margin-bottom:12px;">관리자 인증 코드</div><p style="margin:0 0 16px;color:#5a5446;">10분 안에 아래 코드를 관리자 화면에 입력해 주세요.</p><div style="font-size:34px;font-weight:900;letter-spacing:10px;color:#c8a84b;text-align:center;padding:18px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;">${code}</div>`);
-  const sent = await sendResendEmail(env, { to: email, subject: "[리터스텔라] 관리자 인증 코드", html });
+  const sent = await sendResendEmail(env, { to: email, subject: "[리터스텔라] 관리자 인증 코드", html, lane: "auth" });
   if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
   return json({ ok: true, token, exp }, 200, cors);
 }
@@ -705,9 +705,9 @@ function otpEmailHtml(code, issuedAt) {
 //   마케팅 대량 발송에서 반송이 나면 그 주소의 **로그인 인증 메일까지** 막힌다.
 //   실제로 7/24 대량 발송 반송으로 OTP 가 3주간 끊겼다(memory: email_suppression_incident).
 //   RESEND_FROM_MARKETING 으로 **발신 주소만** 갈라 놨는데, 그건 계정을 안 가르므로 효과가 없다.
-//   → 인증 계열은 RESEND_API_KEY_AUTH 를 쓴다. **없으면 기존 키로 폴백**하므로
-//     시크릿을 넣기 전까지 동작은 지금과 완전히 같다(무위험 배선).
-//   켜는 법: 별도 Resend 계정 생성 → 도메인 인증 → `npx wrangler secret put RESEND_API_KEY_AUTH`
+//   → 인증·계정 복구·수강 연결 계열은 AUTH_EMAIL_SERVICE(Service Binding)를 쓴다.
+//     Resend 키는 진단 Worker 한 곳만 소유하고, 이 Worker에는 복사하지 않는다.
+//   로컬 개발처럼 바인딩이 없는 환경에서만 RESEND_API_KEY_AUTH → RESEND_API_KEY 순서로 폴백한다.
 function resendKey(env, lane) {
   const raw = lane === "auth" && env.RESEND_API_KEY_AUTH ? env.RESEND_API_KEY_AUTH : env.RESEND_API_KEY;
   const s = String(raw || "");
@@ -719,6 +719,17 @@ function resendKey(env, lane) {
 // lane="auth" = 로그인·인증코드·비밀번호 재설정처럼 **못 가면 서비스가 멈추는** 메일.
 //   그런 메일은 마케팅과 같은 계정에 두지 않는다(위 resendKey 주석 참조).
 async function sendResendEmail(env, { to, subject, html, idempotencyKey, lane }) {
+  if (lane === "auth" && env.AUTH_EMAIL_SERVICE) {
+    try {
+      const result = await env.AUTH_EMAIL_SERVICE.sendCriticalEmail({ to, subject, html, idempotencyKey });
+      if (result?.ok) return result.id || true;
+      console.log(JSON.stringify({ evt: "auth_email_service_fail", status: result?.status || 502, error: result?.error || "send_failed" }));
+      return false;
+    } catch (e) {
+      console.log(JSON.stringify({ evt: "auth_email_service_fail", status: "rpc", detail: String(e).slice(0, 120) }));
+      return false;
+    }
+  }
   if (!resendKey(env, lane)) return false;
   const from = (lane === "auth" && env.RESEND_FROM_AUTH) || env.RESEND_FROM || "LiterStella <onboarding@resend.dev>"; // 도메인 인증 후 인증@literstella.co.kr
   // 429/5xx 지수 백오프 재시도 2회 + 실패 로깅(발송 감사 2026-07-20 P0: 대량 유입 시 순간 레이트 초과가 조용한 send_failed로 전락하던 것).
@@ -761,6 +772,17 @@ async function sendResendEmail(env, { to, subject, html, idempotencyKey, lane })
 //      — 조회 장애가 로그인 전면 차단으로 번지면 안 된다.
 // lane 을 받는다 — 차단 목록은 계정 단위라, 인증 레인의 차단 여부는 인증 계정에서 물어야 맞다.
 async function isEmailSuppressed(env, email, lane) {
+  if (lane === "auth" && env.AUTH_EMAIL_SERVICE) {
+    try {
+      const result = await env.AUTH_EMAIL_SERVICE.getSuppressionStatus(email);
+      if (result?.ok) return Boolean(result.suppressed);
+      console.log(JSON.stringify({ evt: "auth_suppression_check_fail", status: result?.status || 502 }));
+      return false;
+    } catch (e) {
+      console.log(JSON.stringify({ evt: "auth_suppression_check_fail", status: "rpc", detail: String(e).slice(0, 100) }));
+      return false;
+    }
+  }
   if (!resendKey(env, lane)) return false;
   try {
     const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
@@ -784,8 +806,10 @@ async function isEmailSuppressed(env, email, lane) {
 //     ② 주소당 1회만 — 풀어봤는데 또 차단됐다면 그건 진짜 문제 주소다.
 //     ③ 조회 실패 시 풀지 않는다(모르면 건드리지 않는다).
 //   해제 후 또 반송되면 Resend가 다시 차단하고 웹훅이 기록 → 다음부터 ①에 걸려 자동 중단.
-async function tryAutoUnsuppress(env, email) {
-  if (!resendKey(env)) return false;
+async function tryAutoUnsuppress(env, email, lane) {
+  if (lane !== "auth" || !env.AUTH_EMAIL_SERVICE) {
+    if (!resendKey(env, lane)) return false;
+  }
   try {                                                   // ① 관측된 반송 이력(90일)
     const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
     const r = await sbFetch(env, `email_bounces?email=eq.${encodeURIComponent(email)}&occurred_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
@@ -793,9 +817,21 @@ async function tryAutoUnsuppress(env, email) {
     if ((await r.json()).length) return false;
   } catch { return false; }                               // ③ 모르면 건드리지 않는다
   if (env.OTP_GUARD && await env.OTP_GUARD.get(`auto-unsup:${email}`)) return false;   // ② 주소당 1회
+  if (lane === "auth" && env.AUTH_EMAIL_SERVICE) {
+    try {
+      const result = await env.AUTH_EMAIL_SERVICE.removeSuppression(email);
+      console.log(JSON.stringify({ evt: "auth_auto_unsuppress", ok: Boolean(result?.ok), status: result?.status || 200 }));
+      if (!result?.ok) return false;
+      if (env.OTP_GUARD) await env.OTP_GUARD.put(`auto-unsup:${email}`, "1", { expirationTtl: 90 * 86400 });
+      return true;
+    } catch (e) {
+      console.log(JSON.stringify({ evt: "auth_auto_unsuppress", ok: false, status: "rpc", detail: String(e).slice(0, 100) }));
+      return false;
+    }
+  }
   try {
     const r = await fetch(`https://api.resend.com/suppressions/${encodeURIComponent(email)}`, {
-      method: "DELETE", headers: { Authorization: `Bearer ${resendKey(env)}` },
+      method: "DELETE", headers: { Authorization: `Bearer ${resendKey(env, lane)}` },
     });
     console.log(JSON.stringify({ evt: "auto_unsuppress", ok: r.ok, status: r.status }));
     if (!r.ok) return false;
@@ -823,6 +859,7 @@ async function notifySuppressedAttempt(env, email) {
         + `<p style="margin:0 0 12px;font-size:13px;color:#6b6355;line-height:1.7;">차단 원인이 대량 발송 반송이면 해제해도 안전합니다. Resend 대시보드 → Suppressions에서 확인해 주세요. 사용자에게는 화면에서 카카오 채널로 문의하도록 안내되고 있어요.</p>`
       ),
       idempotencyKey: `supnotify:${email}:${new Date().toISOString().slice(0, 10)}`,
+      lane: "auth",
     });
   } catch { /* 알림 실패가 로그인 흐름을 막지 않는다 */ }
 }
@@ -922,6 +959,7 @@ async function maybeAlertBounceSurge(env, row) {
         + `<p style="margin:0;font-size:12.5px;color:#6b6355;line-height:1.7;">반송된 주소는 Resend가 자동으로 차단 목록에 올려 <b>이후 인증 메일까지 막습니다.</b> 대량 발송 거부가 원인이면 Suppressions에서 해제해 주세요.</p>`
       ),
       idempotencyKey: `bouncealert:${surge ? "surge" : row.email}:${new Date().toISOString().slice(0, 13)}`,
+      lane: "auth",
     });
   } catch { /* 알림 실패가 웹훅 200을 막지 않는다 */ }
 }
@@ -1530,7 +1568,7 @@ async function otpSend(req, env, cors) {
   // 🔴 보내기 전에 "이 주소로 메일이 나갈 수 있나"를 먼저 묻는다(2026-08-18). 못 나가면 거짓 성공 대신 원인을 알린다.
   if (await isEmailSuppressed(env, email, "auth")) {
     // 먼저 스스로 풀어본다 — 7/24 사고분은 대부분 여기서 조용히 해결돼 사용자는 아무것도 눈치채지 못한다.
-    const recovered = await tryAutoUnsuppress(env, email);
+    const recovered = await tryAutoUnsuppress(env, email, "auth");
     if (!recovered) {
       await notifySuppressedAttempt(env, email);
       return json({
@@ -2259,8 +2297,8 @@ async function cafeNotifyMember(env, reqRow, kind) {
     rejected: ["[리터스텔라] 수강 연결을 확인하지 못했어요", `<p>카페 수강 명단에서 신청 정보를 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>착오가 있다고 생각되시면 카카오 채널로 알려주세요 — 직접 확인해 드려요.</p>`],
   }[kind];
   if (!T) return null;
-  if (await isEmailSuppressed(env, email)) {
-    const recovered = await tryAutoUnsuppress(env, email);
+  if (await isEmailSuppressed(env, email, "auth")) {
+    const recovered = await tryAutoUnsuppress(env, email, "auth");
     if (!recovered) { await notifySuppressedAttempt(env, email); return "suppressed"; }
   }
   const sent = await sendResendEmail(env, {
@@ -2268,6 +2306,7 @@ async function cafeNotifyMember(env, reqRow, kind) {
     subject: T[0],   // "수강 연결" 포함 → TX_SUBJECT_RE 에 걸려 반송 즉시 알림 대상
     html: brandEmailHtml(T[1]),
     idempotencyKey: `cafetr:${reqRow.id}:${kind}`,
+    lane: "auth",
   });
   return typeof sent === "string" ? sent : (sent ? "sent" : null);
 }
@@ -2390,6 +2429,7 @@ async function cafeTransferRequest(req, env, cors) {
 <ul><li>요청: <b>${rid}</b> · 강좌: <b>${campaign}</b></li><li>로그인: ${maskEmailAddr(user.email)}</li><li>카페 별명: <b>${escHtml(cafeNickname)}</b> · 네이버 ID: ${maskNaverId(naverId)}</li><li>명단 자동 대조: <b>${rosterMatch === "exact" ? "✅ 정확 일치" : "❌ 일치 없음"}</b></li></ul>
 <p><a href="https://class-new.literstella.co.kr/admin">관리자 → 카페 이관 탭에서 검토 →</a></p>`,
         idempotencyKey: `cafetr:${row.id}:admin`,
+        lane: "auth",
       });
       if (typeof aid === "string") audit.admin_email_id = aid;
     }
@@ -2518,8 +2558,8 @@ async function backupEmailSendCode(req, env, cors) {
   if (backupEmail === user.email) return json({ ok: false, error: "same_as_login", message: "로그인 이메일과 다른 주소를 백업으로 등록해 주세요." }, 400, cors);
   const allowed = await otpSendAllowed(env, backupEmail);
   if (!allowed.ok) return json({ ok: false, error: "too_many_requests" }, 429, cors);
-  if (await isEmailSuppressed(env, backupEmail)) {
-    const recovered = await tryAutoUnsuppress(env, backupEmail);
+  if (await isEmailSuppressed(env, backupEmail, "auth")) {
+    const recovered = await tryAutoUnsuppress(env, backupEmail, "auth");
     if (!recovered) { await notifySuppressedAttempt(env, backupEmail); return json({ ok: false, error: "suppressed", message: "이 주소로는 메일이 전달되지 않아요. 다른 주소를 써 주세요." }, 422, cors); }
   }
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
@@ -2534,6 +2574,7 @@ async function backupEmailSendCode(req, env, cors) {
     to: backupEmail,
     subject: "[리터스텔라] 백업 이메일 인증 코드",
     html: brandEmailHtml(`<div style="font-size:17px;font-weight:800;margin-bottom:10px;">백업 이메일 인증 코드</div><p style="margin:0 0 14px;color:#5a5446;">10분 안에 아래 코드를 입력해 주세요. 이 주소는 계정을 잃었을 때 찾는 용도로만 쓰여요.</p><div style="font-size:32px;font-weight:900;letter-spacing:9px;color:#c8a84b;text-align:center;padding:16px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:13px;">${code}</div>`),
+    lane: "auth",
   });
   if (!sent) return json({ ok: false, error: "send_failed" }, 502, cors);
   return json({ ok: true, token: `${exp}.${sig}` }, 200, cors);
@@ -2675,6 +2716,7 @@ async function classLinkRequestSubmit(req, env, cors) {
 <p><a href="https://class-new.literstella.co.kr/admin">관리자 페이지에서 검토하기 →</a></p>
 <p style="font-size:12px;color:#888">LiveKlass 구매 기록/결제 증빙 확인 전에는 승인하지 마세요.</p>`,
         idempotencyKey: `linkreq:${reqId}`,
+        lane: "auth",
       });
     }
   } catch { /* 비차단 */ }
@@ -2757,6 +2799,7 @@ export default {
       admin: env.ADMIN_API_ENABLED === "true",
       payment: env.PAYMENT_ENABLED === "true",
       contentPoints: env.CONTENT_POINTS_ENABLED === "true",
+      authMailerBound: Boolean(env.AUTH_EMAIL_SERVICE),
     }, 200, cors);
 
     // 셀프 회원 탈퇴 — 로그인 JWT 필수 + confirm:"DELETE" 명시 신호.
@@ -2771,7 +2814,7 @@ export default {
       return resendWebhook(req, env, cors);
     }
 
-    // 이메일 인증 OTP (회원가입) — 플래그 없이 항상 열림. RESEND_API_KEY·OTP_SECRET 시크릿 필요.
+    // 이메일 인증 OTP (회원가입) — 플래그 없이 항상 열림. AUTH_EMAIL_SERVICE·OTP_SECRET 필요.
     if (path === "/api/auth/otp/send" || path === "/api/auth/otp/verify") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
       return path.endsWith("/send") ? otpSend(req, env, cors) : otpVerify(req, env, cors);
@@ -2896,7 +2939,14 @@ export default {
         env,
         cors,
         path.replace("/api/stella-upgrade/", ""),
-        { json, requireUser, sbFetch, sendEmail: sendResendEmail, brandEmailHtml, isEmailSuppressed },
+        {
+          json,
+          requireUser,
+          sbFetch,
+          sendEmail: (emailEnv, message) => sendResendEmail(emailEnv, { ...message, lane: "auth" }),
+          brandEmailHtml,
+          isEmailSuppressed: (emailEnv, email) => isEmailSuppressed(emailEnv, email, "auth"),
+        },
       );
     }
 
