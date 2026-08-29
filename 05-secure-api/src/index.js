@@ -13,6 +13,11 @@ import {
   classBookRequestSatisfied,
   classEnrollmentEmailCandidates,
 } from "./class-enrollment-access.mjs";
+import {
+  cafeRosterMatchLabel,
+  evaluateCafeRoster,
+  normalizeCafeText,
+} from "./cafe-transfer-policy.mjs";
 
 // ── CORS ─────────────────────────────────────────────────
 function corsHeaders(req, env) {
@@ -2270,10 +2275,9 @@ async function meOverview(req, env, cors) {
 //   운영자가 명단(cafe_rosters, 비공개 402명)과 대조해 승인한다. book_code 는 클라이언트를
 //   신뢰하지 않는다 — campaign → 부여 강좌 매핑은 여기 상수가 정본이다.
 //   🔑 자동 승인(2026-08-27 운영자 지시 "수동 검증 필요 없으면 자동으로"):
-//     명단과 **확실히 1:1로 떨어질 때만** 서버가 바로 승인한다. 나머지는 종전대로 사람이 본다.
-//     근거(실측): campaign 안에서 별명이 유일하다 — 같은 별명 2명 이상 0건·(별명,접두부) 중복 0건.
-//     🔴 단 접두부 2자(59행·14.7%)는 제외한다. 별명은 카페에서 보이므로 2자면 두 번째 요소가
-//        사실상 없다 — 별명만 알면 아무나 통과한다. 4자(343행·85.3%)만 자동으로 연다.
+//     명단과 **확실히 1:1로 떨어질 때만** 서버가 바로 승인한다. 나머지는 사람이 본다.
+//     네이버 전체 ID 명단을 확보할 수 없어, 캠페인 안에서 접두부 후보가 하나뿐인지를 대조한다.
+//     🔴 단 접두부 2자는 자동에서 제외한다. 4자 이상 단일 후보만 별명과 무관하게 자동으로 연다.
 //     🔴 명단 1행 = 1회 소진(roster_key 유니크). 두 계정이 같은 행으로 승인되면 진짜 수강생이 못 받는다.
 const CAFE_CAMPAIGN_GRANTS = {
   anne: ["anne"],
@@ -2285,7 +2289,22 @@ function maskNaverId(id) {
   return v.length <= 3 ? v[0] + "**" : v.slice(0, 3) + "*".repeat(Math.min(v.length - 3, 8));
 }
 // NFKC + trim + casefold — 명단 적재와 같은 정규화(다르면 대조가 조용히 어긋난다)
-function cafeNorm(sv) { return String(sv || "").normalize("NFKC").trim().toLowerCase(); }
+function cafeNorm(sv) { return normalizeCafeText(sv); }
+
+async function cafeCampaignAccess(env, loginEmail, campaign) {
+  const expected = CAFE_CAMPAIGN_GRANTS[campaign] || [];
+  if (!expected.length) return { ok: true, ownedAll: false, books: [] };
+  const r = await sbFetch(env, `class_verifications?email=eq.${encodeURIComponent(String(loginEmail || "").trim().toLowerCase())}&select=book_code`);
+  if (!r.ok) return { ok: false, ownedAll: false, books: [] };
+  const owned = new Set((await r.json()).map((row) => String(row.book_code || "")));
+  return { ok: true, ownedAll: expected.every((code) => owned.has(code)), books: expected };
+}
+
+async function cafeRosterDecision(env, campaign, cafeNickname, naverId) {
+  const rr = await sbFetch(env, `cafe_rosters?campaign=eq.${campaign}&select=nickname_norm,id_prefix&limit=1000`);
+  if (!rr.ok) return { rosterMatch: "none", autoOk: false, rosterKey: null };
+  return evaluateCafeRoster({ rows: await rr.json(), campaign, cafeNickname, naverId });
+}
 
 // 회원 통지 — 정보성 1회. 발송 전 차단목록 3단(7/24 사고 재발 방지), 발송 ID 를 행에 감사.
 async function cafeNotifyMember(env, reqRow, kind) {
@@ -2348,25 +2367,34 @@ async function cafeTransferRequest(req, env, cors) {
   const openR = await sbFetch(env, `cafe_transfer_requests?auth_uid=eq.${user.id}&campaign=eq.${campaign}&status=in.(pending,needinfo)&select=id,status&limit=1`);
   if (!openR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const open = (await openR.json())[0];
-  // 명단 자동 대조 — 정확 별명 + 입력 전체 ID 가 접두부로 시작(핸드오프 규칙). 접두부만 일치는 후보 아님.
-  let rosterMatch = "none";
-  let autoOk = false;          // 자동 승인 가능 여부
-  let rosterKey = null;        // 소진할 명단 행(campaign:별명)
-  try {
-    const nickNorm = cafeNorm(cafeNickname);
-    const rr = await sbFetch(env, `cafe_rosters?campaign=eq.${campaign}&nickname_norm=eq.${encodeURIComponent(nickNorm)}&select=id_prefix&limit=5`);
-    if (rr.ok) {
-      const rows = await rr.json();
-      const hits = rows.filter((x) => naverId.startsWith(String(x.id_prefix || "").toLowerCase()));
-      if (hits.length) rosterMatch = "exact";
-      // 🔴 자동은 **딱 하나만 맞을 때**. 별명이 유일하다는 실측이 전제이고, 그래도 방어적으로 센다.
-      //    접두부 2자는 별명만 알면 통과하므로 자동에서 뺀다(사람이 본다).
-      if (hits.length === 1 && String(hits[0].id_prefix || "").length >= 4) {
-        autoOk = true;
-        rosterKey = `${campaign}:${nickNorm}`;
-      }
+  // 이미 해당 캠페인 전체 수강권을 가진 회원은 새 대기 건을 만들지 않는다.
+  // 과거 대기 건이 있으면 승인 상태로 정리하되, 중복 안내 메일은 보내지 않는다.
+  const access = await cafeCampaignAccess(env, user.email, campaign);
+  if (access.ok && access.ownedAll) {
+    if (open) {
+      const now = new Date().toISOString();
+      const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${open.id}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          status: "approved", admin_note: null, granted_books: access.books.join(","),
+          decided_by: "existing-access", decided_at: now, updated_at: now,
+          approved_email_id: "skipped:already-access",
+        }),
+      });
+      if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
     }
-  } catch { /* 대조 실패 = none 으로 접수 — 사람이 본다 */ }
+    return json({
+      ok: true, already: true, alreadyOwned: true,
+      request: { status: "approved", campaign, adminNote: null, grantedBooks: access.books.join(",") },
+    }, 200, cors);
+  }
+
+  // 네이버 전체 ID 명단은 확보할 수 없으므로 저장된 접두부를 사용한다.
+  // 캠페인 안에서 후보가 하나뿐이고 접두부가 4자 이상이면 별명과 무관하게 자동 승인한다.
+  // 짧은 접두부·중복 후보·미일치는 반드시 관리자 검토로 남긴다.
+  let rosterDecision = { rosterMatch: "none", autoOk: false, rosterKey: null };
+  try { rosterDecision = await cafeRosterDecision(env, campaign, cafeNickname, naverId); } catch { /* 수동 검토 */ }
+  const { rosterMatch, autoOk, rosterKey } = rosterDecision;
   const payload = {
     login_email: user.email, campaign, cafe_nickname: cafeNickname, naver_id: naverId,
     consent_version: consentVersion, roster_match: rosterMatch, updated_at: new Date().toISOString(),
@@ -2424,9 +2452,9 @@ async function cafeTransferRequest(req, env, cors) {
       const rid = String(row.id).slice(0, 8);
       const aid = await sendResendEmail(env, {
         to: env.ADMIN_EMAIL,
-        subject: `[카페 수강 연결] ${campaign} · ${rid} · 명단 ${rosterMatch === "exact" ? "일치" : "불일치"}`,
+        subject: `[카페 수강 연결] ${campaign} · ${rid} · ${cafeRosterMatchLabel(rosterMatch)}`,
         html: `<p>네이버 카페 수강 이관 신청이 접수됐어요.</p>
-<ul><li>요청: <b>${rid}</b> · 강좌: <b>${campaign}</b></li><li>로그인: ${maskEmailAddr(user.email)}</li><li>카페 별명: <b>${escHtml(cafeNickname)}</b> · 네이버 ID: ${maskNaverId(naverId)}</li><li>명단 자동 대조: <b>${rosterMatch === "exact" ? "✅ 정확 일치" : "❌ 일치 없음"}</b></li></ul>
+<ul><li>요청: <b>${rid}</b> · 강좌: <b>${campaign}</b></li><li>로그인: ${maskEmailAddr(user.email)}</li><li>카페 별명: <b>${escHtml(cafeNickname)}</b> · 네이버 ID: ${maskNaverId(naverId)}</li><li>명단 자동 대조: <b>${escHtml(cafeRosterMatchLabel(rosterMatch))}</b></li></ul>
 <p><a href="https://class-new.literstella.co.kr/admin">관리자 → 카페 이관 탭에서 검토 →</a></p>`,
         idempotencyKey: `cafetr:${row.id}:admin`,
         lane: "auth",
@@ -2501,7 +2529,7 @@ async function adminCafeTransferList(req, env, cors) {
   const rows = (await r.json()).map((x) => ({
     id: x.id, campaign: x.campaign, status: x.status, created_at: x.created_at,
     login_email: x.login_email, cafe_nickname: x.cafe_nickname,
-    naver_id_masked: `${maskNaverId(x.naver_id)}${x.roster_match === "exact" ? " · 명단일치✅" : " · 명단불일치❌"}`,
+    naver_id_masked: `${maskNaverId(x.naver_id)} · ${cafeRosterMatchLabel(x.roster_match)}`,
     admin_note: x.admin_note, granted_books: x.granted_books,
   }));
   return json({ ok: true, requests: rows, resentNotices: resent.sent }, 200, cors);
@@ -2520,21 +2548,53 @@ async function adminCafeTransferDecide(req, env, cors) {
   if (!rowR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const row = (await rowR.json())[0];
   if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
+  const status = action === "approve" ? "approved" : action === "needinfo" ? "needinfo" : "rejected";
+  const now = new Date().toISOString();
+  let rosterKeyManual = row.roster_match === "exact" ? `${row.campaign}:${cafeNorm(row.cafe_nickname)}` : null;
+  let reviewedMatch = row.roster_match || "none";
   let grantedBooks = null;
+  let updated;
   if (action === "approve") {
     if (!CAFE_CAMPAIGN_GRANTS[row.campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
+    try {
+      const decision = await cafeRosterDecision(env, row.campaign, row.cafe_nickname, row.naver_id);
+      reviewedMatch = decision.rosterMatch;
+      if (decision.rosterKey) rosterKeyManual = decision.rosterKey;
+    } catch { /* 기존 판정으로 수동 승인 계속 */ }
+    // 명단 행을 먼저 선점한다. 저장 실패 뒤 수강권만 열리는 부분 성공을 막는다.
+    const claimPatch = {
+      status: "approved", admin_note: adminNote || null, roster_match: reviewedMatch,
+      decided_by: admin.email, decided_at: now, updated_at: now,
+      ...(rosterKeyManual ? { roster_key: rosterKeyManual } : {}),
+    };
+    const claim = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(claimPatch),
+    });
+    if (!claim.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+    updated = (await claim.json())[0];
     // 자동과 **같은 함수**를 쓴다 — 원장 두 벌이면 한쪽만 고쳐져 어긋난다.
-    grantedBooks = await cafeGrantBooks(env, row);
-    if (!grantedBooks) return json({ ok: false, error: "grant_failed" }, 502, cors);
+    grantedBooks = await cafeGrantBooks(env, updated);
+    if (!grantedBooks) {
+      await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          status: row.status, admin_note: row.admin_note || null, granted_books: row.granted_books || null,
+          roster_key: row.roster_key || null, roster_match: row.roster_match || "none",
+          decided_by: row.decided_by || null, decided_at: row.decided_at || null, updated_at: now,
+        }),
+      }).catch(() => {});
+      return json({ ok: false, error: "grant_failed" }, 502, cors);
+    }
+    const finish = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ granted_books: grantedBooks }),
+    });
+    if (finish.ok) updated = (await finish.json())[0];
+  } else {
+    const patch = { status, admin_note: adminNote || null, granted_books: null, roster_match: reviewedMatch, decided_by: admin.email, decided_at: now, updated_at: now };
+    const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
+    if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
+    updated = (await up.json())[0];
   }
-  const status = action === "approve" ? "approved" : action === "needinfo" ? "needinfo" : "rejected";
-  // 수동 승인도 명단 행을 소진 표시한다 — 자동과 같은 열쇠라 두 경로가 서로를 막는다.
-  const rosterKeyManual = status === "approved" && row.roster_match === "exact"
-    ? `${row.campaign}:${cafeNorm(row.cafe_nickname)}` : null;
-  const patch = { status, admin_note: adminNote || null, granted_books: grantedBooks, decided_by: admin.email, decided_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...(rosterKeyManual ? { roster_key: rosterKeyManual } : {}) };
-  const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
-  if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
-  const updated = (await up.json())[0];
   try {
     const mid = await cafeNotifyMember(env, updated, status);
     // 승인 통지는 approved_email_id 에 — 접수 통지(member_email_id)를 덮지 않는다.
