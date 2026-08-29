@@ -2350,6 +2350,19 @@ async function cafeGrantBooks(env, row) {
   return codes.join(",");
 }
 
+async function cafeEnsureEnrollmentLedger(env, row) {
+  const codes = CAFE_CAMPAIGN_GRANTS[row.campaign] || [];
+  if (!codes.length) return null;
+  const ins = await sbFetch(env, `class_enrollments?on_conflict=email,book_code`, {
+    method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify(codes.map((code) => ({
+      email: row.login_email, book_code: code,
+      source: `naver-cafe:${row.campaign}:${String(row.id).slice(0, 8)}`,
+    }))),
+  });
+  return ins.ok ? codes.join(",") : null;
+}
+
 // POST /api/class/cafe-transfer/request {campaign, cafeNickname, naverId, consentVersion}
 async function cafeTransferRequest(req, env, cors) {
   const user = await requireUser(req, env);
@@ -2372,11 +2385,13 @@ async function cafeTransferRequest(req, env, cors) {
   const access = await cafeCampaignAccess(env, user.email, campaign);
   if (access.ok && access.ownedAll) {
     if (open) {
+      const books = await cafeEnsureEnrollmentLedger(env, { id: open.id, login_email: user.email, campaign });
+      if (!books) return json({ ok: false, error: "grant_failed" }, 502, cors);
       const now = new Date().toISOString();
       const up = await sbFetch(env, `cafe_transfer_requests?id=eq.${open.id}`, {
         method: "PATCH", headers: { Prefer: "return=minimal" },
         body: JSON.stringify({
-          status: "approved", admin_note: null, granted_books: access.books.join(","),
+          status: "approved", admin_note: null, granted_books: books,
           decided_by: "existing-access", decided_at: now, updated_at: now,
           approved_email_id: "skipped:already-access",
         }),
