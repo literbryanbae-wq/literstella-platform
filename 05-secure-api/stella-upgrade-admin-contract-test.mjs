@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { stellaUpgradeEmailRoute } from "./src/stella-upgrade-email-service.mjs";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -109,3 +110,13 @@ function makeDeps({ sent = [], suppression = false } = {}) {
 }
 
 console.log("stella-upgrade-admin-contract-test: ok");
+
+const depositorSql = readFileSync(
+  new URL("./stella-upgrade-require-depositor.sql", import.meta.url),
+  "utf8",
+);
+assert.match(depositorSql, /lower\(trim\(p_payment_method\)\) = 'bank_transfer'/);
+assert.match(depositorSql, /nullif\(trim\(coalesce\(p_depositor_name, ''\)\), ''\) is null/);
+assert.match(depositorSql, /depositor_name_required/);
+
+console.log("stella-upgrade depositor requirement: ok");
