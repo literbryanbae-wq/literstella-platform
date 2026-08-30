@@ -3,6 +3,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const COUPON_RE = /^[A-Z0-9][A-Z0-9_-]{2,63}$/;
 const LIVEKLASS_PACKAGE_URL = "https://class.literstella.co.kr/packages/312328";
 const CLASS_ROOM_URL = "https://class-new.literstella.co.kr/room";
+const CLASS_ADMIN_URL = "https://class-new.literstella.co.kr/admin";
 // 계좌 정보는 클래스 앱 data/stellaUpgrade.js STELLA_BANK와 같은 값이어야 한다(한쪽만 바뀌면 오입금).
 const BANK = { bank: "농협", account: "302-2142-9005-61", holder: "배선원(리터스텔라)" };
 
@@ -94,6 +95,20 @@ const ALL_BOOKS = ["kidari", "anne", "littlewomen1", "littlewomen2", "pride", "g
 // 관리자 알림이 죽지 않게 하려는 것. 컬럼이 생기면 자동으로 안내 메일까지 살아난다.
 const DEPOSIT_COLUMNS = ["depositor_name", "bank_guide_emailed_at"];
 
+async function enrichMemberNicknames(env, sbFetch, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const authIds = [...new Set(list.map((row) => String(row?.user_id || "").trim()).filter((id) => UUID_RE.test(id)))];
+  if (!authIds.length) return list.map((row) => ({ ...row, member_nickname: null }));
+  const response = await sbFetch(
+    env,
+    `users?auth_uid=in.(${authIds.map(encodeURIComponent).join(",")})&select=auth_uid,nickname`,
+  );
+  if (!response.ok) return list.map((row) => ({ ...row, member_nickname: null }));
+  const profiles = (await readJson(response)) || [];
+  const nicknameByAuth = new Map(profiles.map((profile) => [String(profile.auth_uid || ""), String(profile.nickname || "").trim()]));
+  return list.map((row) => ({ ...row, member_nickname: nicknameByAuth.get(String(row.user_id || "")) || null }));
+}
+
 async function selectRequest(env, sbFetch, requestId, userId, columns) {
   const ownerFilter = userId ? `&user_id=eq.${encodeURIComponent(userId)}` : "";
   return sbFetch(
@@ -111,7 +126,10 @@ async function fetchRequest(env, sbFetch, requestId, userId) {
   }
   if (!response.ok) return { error: response.status === 400 ? "schema_pending" : "db_read_failed" };
   const rows = await readJson(response);
-  return { row: Array.isArray(rows) ? rows[0] : null, depositReady };
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) return { row: null, depositReady };
+  const [enriched] = await enrichMemberNicknames(env, sbFetch, [row]);
+  return { row: enriched || row, depositReady };
 }
 
 async function patchRequest(env, sbFetch, requestId, patch) {
@@ -137,8 +155,10 @@ function adminRequestEmail(row, brandEmailHtml) {
       <tr><td style="padding:5px 0;color:#8a8270;">결제 방법</td><td style="padding:5px 0;text-align:right;font-weight:800;">${escapeHtml(method)}</td></tr>
       <tr><td style="padding:5px 0;color:#8a8270;">실결제 금액</td><td style="padding:5px 0;text-align:right;font-weight:800;">${escapeHtml(won(row.payable_amount))}</td></tr>
       <tr><td style="padding:5px 0;color:#8a8270;">할인 쿠폰 금액</td><td style="padding:5px 0;text-align:right;">${escapeHtml(won(row.coupon_amount))}</td></tr>
+      <tr><td style="padding:5px 0;color:#8a8270;">회원 닉네임</td><td style="padding:5px 0;text-align:right;font-weight:800;">${escapeHtml(row.member_nickname || "확인 필요")}</td></tr>
       <tr><td style="padding:5px 0;color:#8a8270;">class-new 이메일</td><td style="padding:5px 0;text-align:right;">${escapeHtml(row.email)}</td></tr>
       <tr><td style="padding:5px 0;color:#8a8270;">라이브클래스 이메일</td><td style="padding:5px 0;text-align:right;">${escapeHtml(row.liveklass_id)}</td></tr>
+      ${row.payment_method === "bank_transfer" ? `<tr><td style="padding:5px 0;color:#8a8270;">입금자명</td><td style="padding:5px 0;text-align:right;font-weight:800;">${escapeHtml(row.depositor_name || "미기재")}</td></tr>` : ""}
       ${row.payment_method === "bank_transfer" ? `<tr><td style="padding:5px 0;color:#8a8270;">현금영수증 번호</td><td style="padding:5px 0;text-align:right;">${escapeHtml(row.cash_receipt_number)}</td></tr>` : ""}
     </table>
     <div style="margin-top:16px;padding:13px;background:#faf7ef;border-radius:10px;">
@@ -146,7 +166,7 @@ function adminRequestEmail(row, brandEmailHtml) {
       <div style="margin-top:8px;"><strong>추가할 수업</strong> · ${escapeHtml(courseNames(row.missing_books) || "없음")}</div>
     </div>
     <div style="margin-top:18px;text-align:center;">
-      <a href="https://challenge.literstella.co.kr" style="display:inline-block;background:#c8a84b;color:#20160a;font-weight:800;text-decoration:none;padding:12px 22px;border-radius:10px;">관리자 화면 열기</a>
+      <a href="${CLASS_ADMIN_URL}" style="display:inline-block;background:#c8a84b;color:#20160a;font-weight:800;text-decoration:none;padding:12px 22px;border-radius:10px;">관리자 화면 열기</a>
     </div>
     <p style="margin:16px 0 0;font-size:12px;color:#8a8270;">신청 번호: ${escapeHtml(row.id)}</p>`;
   return brandEmailHtml(body);
@@ -162,7 +182,7 @@ function bankGuideEmail(row, brandEmailHtml) {
   const line = (key, value) => `<tr><td style="padding:6px 0;color:#8a8270;white-space:nowrap;">${escapeHtml(key)}</td><td style="padding:6px 0;text-align:right;font-weight:800;color:#2b2519;">${escapeHtml(value)}</td></tr>`;
   const body = `
     <div style="font-size:18px;font-weight:800;margin-bottom:8px;">신청이 접수됐습니다</div>
-    <p style="margin:0 0 16px;color:#5a5446;line-height:1.7;">아래 금액을 입금해 주시면 확인 후 미소장 클래스를 한 번에 열어 드립니다. 이 메일을 그대로 보관하셔도 됩니다.</p>
+    <p style="margin:0 0 16px;color:#5a5446;line-height:1.7;">${row.member_nickname ? `${escapeHtml(row.member_nickname)}님, ` : ""}아래 금액을 입금해 주시면 확인 후 미소장 클래스를 한 번에 열어 드립니다. 이 메일을 그대로 보관하셔도 됩니다.</p>
     <div style="padding:18px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;text-align:center;">
       <div style="font-size:12px;color:#8a8270;">입금하실 금액</div>
       <div style="margin-top:6px;font-size:28px;font-weight:900;color:#8b691c;">${escapeHtml(amount)}</div>
@@ -195,7 +215,7 @@ function bankGuideEmail(row, brandEmailHtml) {
 function couponEmail(row, couponCode, brandEmailHtml) {
   const body = `
     <div style="font-size:18px;font-weight:800;margin-bottom:8px;">스텔라 등급 할인 쿠폰이 도착했습니다</div>
-    <p style="margin:0 0 14px;color:#5a5446;">현재 소장 클래스를 반영한 라이브클래스 카드 할인 쿠폰입니다.</p>
+    <p style="margin:0 0 14px;color:#5a5446;">${row.member_nickname ? `${escapeHtml(row.member_nickname)}님, ` : ""}현재 소장 클래스를 반영한 라이브클래스 카드 할인 쿠폰입니다.</p>
     <div style="padding:18px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;text-align:center;">
       <div style="font-size:12px;color:#8a8270;">쿠폰 번호</div>
       <div style="margin-top:6px;font-size:24px;font-weight:900;letter-spacing:1px;color:#8b691c;">${escapeHtml(couponCode)}</div>
@@ -433,7 +453,7 @@ async function issueCouponAuto(req, env, cors, deps) {
 function completionEmail(row, brandEmailHtml) {
   const body = `
     <div style="font-size:18px;font-weight:800;margin-bottom:8px;">평생소장 연결이 완료됐습니다 🎉</div>
-    <p style="margin:0 0 14px;color:#5a5446;line-height:1.75;">결제 확인이 끝나 스텔라 등급의 모든 수업이 지금 쓰시는 계정에 연결됐습니다. 이제 언제든, 평생 이어서 들으실 수 있어요.</p>
+    <p style="margin:0 0 14px;color:#5a5446;line-height:1.75;">${row.member_nickname ? `${escapeHtml(row.member_nickname)}님, ` : ""}결제 확인이 끝나 스텔라 등급의 모든 수업이 지금 쓰시는 계정에 연결됐습니다. 이제 언제든, 평생 이어서 들으실 수 있어요.</p>
     <div style="padding:16px;background:#fdf9ee;border:1px dashed #ddca97;border-radius:14px;">
       <div style="font-size:12px;color:#8a8270;margin-bottom:6px;">연결된 수업 · 8개 전부</div>
       <div style="font-size:14px;line-height:1.8;color:#2b2519;font-weight:700;">${escapeHtml(courseNames(ALL_BOOKS))}</div>
@@ -543,9 +563,9 @@ async function adminOverview(req, env, cors, deps) {
     const fallback = await sbFetch(env, `stella_upgrade_requests?select=${BASE_COLUMNS.join(",")}&order=created_at.desc&limit=200`);
     if (!fallback.ok) return json({ ok: false, error: "db_read_failed" }, 503, cors);
     const rows = (await readJson(fallback)) || [];
-    return json({ ok: true, requests: rows, pool: [] }, 200, cors);
+    return json({ ok: true, requests: await enrichMemberNicknames(env, sbFetch, rows), pool: [] }, 200, cors);
   }
-  const rows = (await readJson(reqRes)) || [];
+  const rows = await enrichMemberNicknames(env, sbFetch, (await readJson(reqRes)) || []);
   const poolRows = poolRes.ok ? ((await readJson(poolRes)) || []) : [];
   const pool = {};
   for (const c of poolRows) {
