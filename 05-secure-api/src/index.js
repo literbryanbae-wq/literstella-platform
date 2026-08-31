@@ -9,6 +9,7 @@
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
+import { classEmailRecoveryRoute, RECOVERY_KIND } from "./class-email-recovery.mjs";
 import {
   classBookRequestSatisfied,
   classEnrollmentEmailCandidates,
@@ -2745,6 +2746,7 @@ async function classLinkRequestSubmit(req, env, cors) {
   const user = await requireUser(req, env);
   if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
   let body; try { body = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  if (body.mailUnreachable === true) return json({ ok: false, error: 'recovery_required' }, 409, cors);
   const name = String(body.name || "").trim().slice(0, 60);
   const phone = String(body.phone || "").replace(/[^0-9]/g, "").slice(0, 20);
   const courses = String(body.courses || "").trim().slice(0, 300);
@@ -2763,9 +2765,10 @@ async function classLinkRequestSubmit(req, env, cors) {
   const mailUnreachable = body.mailUnreachable === true;
   if (match.type === "candidate" && !mailUnreachable) return json({ ok: false, error: "candidate_found", masked: match.masked }, 200, cors);
   // 열린 신청 1건 원칙(멱등) — needinfo면 보완 재제출로 갱신
-  const openR = await sbFetch(env, `class_link_requests?auth_uid=eq.${user.id}&status=in.(pending,needinfo)&select=id,status&limit=1`);
+  const openR = await sbFetch(env, `class_link_requests?auth_uid=eq.${user.id}&status=in.(pending,needinfo)&select=id,status,roster_match&limit=1`);
   if (!openR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const open = (await openR.json())[0];
+  if (open?.roster_match?.kind === RECOVERY_KIND) return json({ ok: false, error: 'recovery_required' }, 409, cors);
   const payload = { login_email: user.email, claimed_email: claimedEmail, name, phone, courses, paid_at: paidAt, order_info: orderInfo, updated_at: new Date().toISOString(),
     roster_match: match.rosterMatch ? { via: "liveklass-phone", unreachable: mailUnreachable, hits: match.rosterMatch } : null };
   let reqId = open?.id || null;
@@ -2839,6 +2842,16 @@ async function adminClassLinkDecide(req, env, cors) {
   if (!rowR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const row = (await rowR.json())[0];
   if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
+  if (row.roster_match?.kind === RECOVERY_KIND) {
+    const result = await sbFetch(env, 'rpc/class_email_recovery_decide_v1', {
+      method: 'POST', body: JSON.stringify({ p_id: id, p_action: action,
+        p_books: Array.isArray(body.bookCodes) ? body.bookCodes : [], p_note: note,
+        p_identity_confirmed: body.identityConfirmed === true, p_admin: admin.id }),
+    });
+    if (!result.ok) return json({ ok: false, error: 'save_failed' }, 502, cors);
+    const decision = await result.json();
+    return json(decision, decision.ok ? 200 : 409, cors);
+  }
   let grantedBooks = null;
   if (action === "approve") {
     const codes = Array.isArray(body.bookCodes) ? body.bookCodes.map((c) => String(c).trim()).filter(Boolean).slice(0, 12) : [];
@@ -2867,6 +2880,13 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(req.url);
     const path = url.pathname;
+    if (path === '/api/class/email-recovery/send' || path === '/api/class/email-recovery/submit') {
+      return classEmailRecoveryRoute(req, env, cors, {
+        json, requireUser, sbFetch, hmacHex, timingSafeEq, sha256Hex,
+        otpSendAllowed, otpGuardIssue, otpGuardConsume, otpGuardBurn,
+        isEmailSuppressed, sendResendEmail, otpEmailHtml, findClassEnrollments,
+      });
+    }
 
     // health
     if (path === "/api/health") return json({
