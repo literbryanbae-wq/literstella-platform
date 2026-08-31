@@ -247,12 +247,9 @@ async function notifyAdmin(req, env, cors, deps) {
   if (found.error) return json({ ok: false, error: found.error }, 503, cors);
   if (!found.row) return json({ ok: false, error: "not_found" }, 404, cors);
 
-  // 입금자명은 신청(RPC) 뒤에 들어오므로 여기서 행에 기록한다. 이미 알림을 보낸 신청이라도
-  // 이름이 새로 들어오면 반영해야 통장 대조가 된다 → 아래 '이미 보냄' 조기 반환보다 먼저 처리.
-  const depositorName = String(body?.depositorName || "").trim().slice(0, 40);
-  if (found.depositReady && depositorName && depositorName !== found.row.depositor_name) {
-    await patchRequest(env, sbFetch, requestId, { depositor_name: depositorName });
-    found = { ...found, row: { ...found.row, depositor_name: depositorName } };
+  // 신청 정보는 RPC가 원자적으로 저장한다. 구 클라이언트의 알림 재호출로 덮어쓰지 않는다.
+  if (!["pending", "coupon_issued"].includes(found.row.status)) {
+    return json({ ok: true, alreadyHandled: true }, 200, cors);
   }
 
   // 계좌이체 신청자에게 입금 안내 메일 — 신청당 1회(bank_guide_emailed_at). 관리자 알림과 독립적으로
