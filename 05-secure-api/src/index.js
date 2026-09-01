@@ -1237,6 +1237,8 @@ async function sendResendTemplateBatches(env, contacts, templateId, variablesFor
   const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
+  let providerStatus = null;
+  let providerError = "";
   for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
     const selected = contacts.slice(offset, offset + RESEND_BATCH_SIZE);
     // 수신자별 토큰 링크를 만들어야 하므로 map 이 비동기다 — Promise.all 로 모은다.
@@ -1412,6 +1414,9 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
           body: JSON.stringify(batch),
         });
         if (r.ok) { ok = true; break; }
+        providerStatus = r.status;
+        const errorBody = await r.json().catch(() => null);
+        providerError = String(errorBody?.name || errorBody?.error || "provider_rejected").slice(0, 80);
         if (r.status !== 429 && r.status < 500) break;
       } catch { /* retry below */ }
       if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
@@ -1419,7 +1424,7 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
     if (ok) sent += batch.length;
     else failed += batch.length;
   }
-  return { sent, failed };
+  return { sent, failed, providerStatus, providerError };
 }
 
 // One-time service notice for members who are actively certifying the current challenge.
@@ -1490,10 +1495,10 @@ async function sendActiveChallengeNotice(req, env, cors) {
     const result = env.ADMIN_EMAIL
       ? await sendResendBatch(env, { to: [env.ADMIN_EMAIL], subject, html, channel: "lifecycle", campaignKey: `${ACTIVE_CHALLENGE_NOTICE_CAMPAIGN}-test` })
       : { sent: 0, failed: 1 };
-    return json({ ok: result.sent === 1, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed }, result.sent === 1 ? 200 : 502, cors);
+    return json({ ok: result.sent === 1, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed, providerStatus: result.providerStatus, providerError: result.providerError }, result.sent === 1 ? 200 : 502, cors);
   }
   const result = await sendResendBatch(env, { to: recipients, subject, html, channel: "lifecycle", campaignKey: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN });
-  return json({ ok: result.failed === 0, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed }, result.failed === 0 ? 200 : 502, cors);
+  return json({ ok: result.failed === 0, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed, providerStatus: result.providerStatus, providerError: result.providerError }, result.failed === 0 ? 200 : 502, cors);
 }
 
 const RESEND_TEMPLATE_ALIASES = { newSpaceAnnouncement: "new-space-announcement" };
