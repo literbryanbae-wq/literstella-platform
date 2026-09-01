@@ -1389,6 +1389,7 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
   let failed = 0;
   let providerStatus = null;
   let providerError = "";
+  let providerMessage = "";
   for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
     const slice = to.slice(offset, offset + RESEND_BATCH_SIZE);
     const perRecipientHeaders = {};
@@ -1417,6 +1418,10 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
         providerStatus = r.status;
         const errorBody = await r.json().catch(() => null);
         providerError = String(errorBody?.name || errorBody?.error || "provider_rejected").slice(0, 80);
+        providerMessage = String(errorBody?.message || "")
+          .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+          .replace(/[A-Za-z0-9_-]{32,}/g, "[redacted]")
+          .slice(0, 200);
         if (r.status !== 429 && r.status < 500) break;
       } catch { /* retry below */ }
       if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
@@ -1424,7 +1429,7 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
     if (ok) sent += batch.length;
     else failed += batch.length;
   }
-  return { sent, failed, providerStatus, providerError };
+  return { sent, failed, providerStatus, providerError, providerMessage };
 }
 
 // One-time service notice for members who are actively certifying the current challenge.
@@ -1495,7 +1500,7 @@ async function sendActiveChallengeNotice(req, env, cors) {
     const result = env.ADMIN_EMAIL
       ? await sendResendBatch(env, { to: [env.ADMIN_EMAIL], subject, html, channel: "lifecycle", campaignKey: `${ACTIVE_CHALLENGE_NOTICE_CAMPAIGN}-test` })
       : { sent: 0, failed: 1 };
-    return json({ ok: result.sent === 1, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed, providerStatus: result.providerStatus, providerError: result.providerError }, result.sent === 1 ? 200 : 502, cors);
+    return json({ ok: result.sent === 1, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed, providerStatus: result.providerStatus, providerError: result.providerError, providerMessage: result.providerMessage }, result.sent === 1 ? 200 : 502, cors);
   }
   const result = await sendResendBatch(env, { to: recipients, subject, html, channel: "lifecycle", campaignKey: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN });
   return json({ ok: result.failed === 0, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed, providerStatus: result.providerStatus, providerError: result.providerError }, result.failed === 0 ? 200 : 502, cors);
