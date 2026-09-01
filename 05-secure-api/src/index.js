@@ -1417,11 +1417,11 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
         if (r.ok) { ok = true; break; }
         providerStatus = r.status;
         const errorBody = await r.json().catch(() => null);
-        providerError = String(errorBody?.name || errorBody?.error || "provider_rejected").slice(0, 80);
         providerMessage = String(errorBody?.message || "")
           .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
           .replace(/[A-Za-z0-9_-]{32,}/g, "[redacted]")
           .slice(0, 200);
+        providerError = `${String(errorBody?.name || errorBody?.error || "provider_rejected")}: ${providerMessage}`.slice(0, 240);
         if (r.status !== 429 && r.status < 500) break;
       } catch { /* retry below */ }
       if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
