@@ -41,7 +41,7 @@ function response(data, status = 200) {
   });
 }
 
-function makeDeps({ sent = [], suppression = false } = {}) {
+function makeDeps({ sent = [], suppression = false, requestRow = row, patches = [] } = {}) {
   return {
     json,
     requireUser: async () => ({ id: authId, email: "admin@example.com" }),
@@ -49,11 +49,14 @@ function makeDeps({ sent = [], suppression = false } = {}) {
     isEmailSuppressed: async () => suppression,
     sendEmail: async (_env, message) => { sent.push(message); return "email-id"; },
     sbFetch: async (_env, path, options = {}) => {
-      if (path.startsWith("stella_upgrade_requests?") && !options.method) return response([row]);
+      if (path.startsWith("stella_upgrade_requests?") && !options.method) return response([requestRow]);
       if (path.startsWith("stella_coupons?")) return response([]);
       if (path.startsWith("users?auth_uid=")) return response([{ auth_uid: authId, nickname: "별빛회원" }]);
       if (path.startsWith("class_verifications?") && options.method === "POST") return response(null, 204);
-      if (path.startsWith("stella_upgrade_requests?") && options.method === "PATCH") return response(null, 204);
+      if (path.startsWith("stella_upgrade_requests?") && options.method === "PATCH") {
+        patches.push(JSON.parse(options.body));
+        return response(null, 204);
+      }
       throw new Error(`unexpected path: ${path}`);
     },
   };
@@ -107,6 +110,58 @@ function makeDeps({ sent = [], suppression = false } = {}) {
   assert.equal(body.grantDone, true);
   assert.match(body.message, /8권 연결은 끝났습니다/);
   assert.equal(sent.length, 0);
+}
+
+const emailedCardRow = {
+  ...row,
+  email: "member@example.com",
+  liveklass_id: "legacy@example.com",
+  payment_method: "liveklass_card",
+  status: "pending",
+  coupon_code: "STELLA50000",
+  coupon_emailed_at: "2026-08-28T01:24:36.401Z",
+  coupon_email_recipient_count: 2,
+};
+
+{
+  const sent = [];
+  const patches = [];
+  const deps = makeDeps({ sent, patches, requestRow: emailedCardRow });
+  const res = await stellaUpgradeEmailRoute(
+    new Request("https://example.com/coupon", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId, couponCode: emailedCardRow.coupon_code }),
+    }),
+    { ADMIN_EMAIL: "admin@example.com" }, {}, "coupon", deps,
+  );
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.alreadySent, true);
+  assert.equal(sent.length, 0);
+  assert.equal(patches.length, 0);
+}
+
+{
+  const sent = [];
+  const patches = [];
+  const deps = makeDeps({ sent, patches, requestRow: emailedCardRow });
+  const res = await stellaUpgradeEmailRoute(
+    new Request("https://example.com/coupon", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId, couponCode: emailedCardRow.coupon_code, resend: true }),
+    }),
+    { ADMIN_EMAIL: "admin@example.com" }, {}, "coupon", deps,
+  );
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.resent, true);
+  assert.equal(sent.length, 2);
+  assert.equal(new Set(sent.map((message) => message.idempotencyKey)).size, 2);
+  assert.ok(sent.every((message) => message.idempotencyKey.startsWith(`stella-coupon-resend/${requestId}/`)));
+  assert.equal(patches.at(-1).status, "coupon_issued");
+  assert.match(patches.at(-1).admin_note, /재발송/);
 }
 
 console.log("stella-upgrade-admin-contract-test: ok");

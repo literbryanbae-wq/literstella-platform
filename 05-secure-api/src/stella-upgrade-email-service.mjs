@@ -317,6 +317,7 @@ async function issueCoupon(req, env, cors, deps) {
   const body = await readRequest(req);
   const requestId = String(body?.requestId || "").trim();
   const couponCode = String(body?.couponCode || "").trim().toUpperCase();
+  const resendRequested = body?.resend === true;
   if (!UUID_RE.test(requestId)) return json({ ok: false, error: "bad_request_id" }, 400, cors);
   if (!COUPON_RE.test(couponCode)) return json({ ok: false, error: "bad_coupon_code" }, 400, cors);
 
@@ -338,15 +339,18 @@ async function issueCoupon(req, env, cors, deps) {
     }, 409, cors);
   }
 
-  return deliverCoupon(env, cors, deps, row, requestId, couponCode);
+  return deliverCoupon(env, cors, deps, row, requestId, couponCode, {
+    forceResend: resendRequested && Boolean(row.coupon_code && row.coupon_emailed_at),
+  });
 }
 
 // 쿠폰 잠금 → 메일 발송 → 감사 기록 — 수동(coupon)·자동(coupon-auto)·신청 즉시(request-notify) 공용 코어.
-async function deliverCouponCore(env, deps, row, requestId, couponCode) {
+async function deliverCouponCore(env, deps, row, requestId, couponCode, options = {}) {
   const { sbFetch, sendEmail, brandEmailHtml } = deps;
+  const forceResend = options.forceResend === true;
   const recipients = recipientEmails(row);
   if (!recipients.length) return { ok: false, error: "recipient_missing", httpStatus: 409 };
-  if (row.coupon_code === couponCode && row.coupon_emailed_at) {
+  if (row.coupon_code === couponCode && row.coupon_emailed_at && !forceResend) {
     return { ok: true, alreadySent: true, couponCode, recipientCount: recipients.length };
   }
   if (!row.coupon_code) {
@@ -359,11 +363,14 @@ async function deliverCouponCore(env, deps, row, requestId, couponCode) {
 
   let sentCount = 0;
   for (const recipient of recipients) {
+    const deliveryKey = forceResend
+      ? `stella-coupon-resend/${requestId}/${stableToken(`${couponCode}:${recipient}:${row.coupon_emailed_at || "unknown"}`)}`
+      : `stella-coupon/${requestId}/${stableToken(`${couponCode}:${recipient}`)}`;
     const sent = await sendEmail(env, {
       to: recipient,
       subject: "[리터스텔라] 스텔라 등급 카드 할인 쿠폰",
       html: couponEmail(row, couponCode, brandEmailHtml),
-      idempotencyKey: `stella-coupon/${requestId}/${stableToken(`${couponCode}:${recipient}`)}`,
+      idempotencyKey: deliveryKey,
     });
     if (sent) sentCount += 1;
   }
@@ -376,17 +383,17 @@ async function deliverCouponCore(env, deps, row, requestId, couponCode) {
     coupon_emailed_at: new Date().toISOString(),
     coupon_email_recipient_count: recipients.length,
     status: "coupon_issued",
-    admin_note: `쿠폰 ${couponCode} · 이메일 ${recipients.length}개 발송`,
+    admin_note: `쿠폰 ${couponCode} · 이메일 ${recipients.length}개 ${forceResend ? "재발송" : "발송"}`,
     updated_at: new Date().toISOString(),
   });
   if (!saved) return { ok: false, error: "coupon_audit_failed", httpStatus: 502 };
 
-  return { ok: true, couponCode, recipientCount: recipients.length };
+  return { ok: true, couponCode, recipientCount: recipients.length, resent: forceResend };
 }
 
-async function deliverCoupon(env, cors, deps, row, requestId, couponCode) {
+async function deliverCoupon(env, cors, deps, row, requestId, couponCode, options = {}) {
   const { json } = deps;
-  const r = await deliverCouponCore(env, deps, row, requestId, couponCode);
+  const r = await deliverCouponCore(env, deps, row, requestId, couponCode, options);
   const { httpStatus, ...body } = r;
   return json(body, r.ok ? 200 : (httpStatus || 502), cors);
 }
