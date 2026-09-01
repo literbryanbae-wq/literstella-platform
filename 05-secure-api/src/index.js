@@ -1237,8 +1237,6 @@ async function sendResendTemplateBatches(env, contacts, templateId, variablesFor
   const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
-  let providerStatus = null;
-  let providerError = "";
   for (let offset = 0; offset < contacts.length; offset += RESEND_BATCH_SIZE) {
     const selected = contacts.slice(offset, offset + RESEND_BATCH_SIZE);
     // 수신자별 토큰 링크를 만들어야 하므로 map 이 비동기다 — Promise.all 로 모은다.
@@ -1389,6 +1387,8 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
   const from = marketingFrom(env);
   let sent = 0;
   let failed = 0;
+  let providerStatus = null;
+  let providerError = "";
   for (let offset = 0; offset < to.length; offset += RESEND_BATCH_SIZE) {
     const slice = to.slice(offset, offset + RESEND_BATCH_SIZE);
     const perRecipientHeaders = {};
