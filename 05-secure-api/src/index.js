@@ -1382,7 +1382,7 @@ function getAudienceSegment(emails, segment) {
 // 🔴 channel 을 받아 **수신자별** 수신거부 링크를 만든다(2026-08-27). 전에는 모두에게 같은
 //   정적 URL(MARKETING_HEADERS)을 붙여서, 메일 클라이언트가 원클릭 POST 를 보내도 누가 껐는지
 //   알 수 없어 아무 일도 일어나지 않았다. channel 기본값은 "marketing".
-async function sendResendBatch(env, { to, subject, html, templateId, channel = "marketing" }) {
+async function sendResendBatch(env, { to, subject, html, templateId, channel = "marketing", campaignKey = "" }) {
   if (!env.RESEND_API_KEY || !Array.isArray(to) || !to.length) return { sent: 0, failed: 0 };
   const from = marketingFrom(env);
   let sent = 0;
@@ -1404,7 +1404,11 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
       try {
         const r = await fetch("https://api.resend.com/emails/batch", {
           method: "POST",
-          headers: { Authorization: `Bearer ${resendKey(env)}`, "Content-Type": "application/json" },
+          headers: {
+            Authorization: `Bearer ${resendKey(env)}`,
+            "Content-Type": "application/json",
+            ...(campaignKey ? { "Idempotency-Key": `${campaignKey}-batch-${Math.floor(offset / RESEND_BATCH_SIZE) + 1}` } : {}),
+          },
           body: JSON.stringify(batch),
         });
         if (r.ok) { ok = true; break; }
@@ -1416,6 +1420,80 @@ async function sendResendBatch(env, { to, subject, html, templateId, channel = "
     else failed += batch.length;
   }
   return { sent, failed };
+}
+
+// One-time service notice for members who are actively certifying the current challenge.
+// The audience is always derived server-side; callers cannot provide recipient addresses.
+const ACTIVE_CHALLENGE_NOTICE_CAMPAIGN = "active-challenge-continue-20260901-v1";
+const ACTIVE_CHALLENGE_NOTICE_SEASON = "yanawan-2607";
+const ACTIVE_CHALLENGE_NOTICE_LINK = "https://challenge.literstella.co.kr/?utm_source=email&utm_medium=lifecycle&utm_campaign=active_challenge_continue_20260901";
+async function fetchAllRows(env, path, pageSize = 1000) {
+  const rows = [];
+  for (let offset = 0; offset < 100_000; offset += pageSize) {
+    const joiner = path.includes("?") ? "&" : "?";
+    const r = await sbFetch(env, `${path}${joiner}limit=${pageSize}&offset=${offset}`);
+    if (!r.ok) throw new Error(`audience_query_${r.status}`);
+    const page = await r.json().catch(() => []);
+    if (!Array.isArray(page)) throw new Error("audience_query_shape");
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
+}
+async function fetchActiveChallengeNoticeAudience(env) {
+  const enrollments = await fetchAllRows(env, `enrollments?season_id=eq.${ACTIVE_CHALLENGE_NOTICE_SEASON}&is_yanawan=eq.true&status=eq.active&select=user_id`);
+  const activeUserIds = new Set(enrollments.map(row => String(row?.user_id || "")).filter(Boolean));
+  if (!activeUserIds.size) return [];
+
+  const checkIns = await fetchAllRows(env, `check_ins?season_id=eq.${ACTIVE_CHALLENGE_NOTICE_SEASON}&select=user_id`);
+  const certifyingUserIds = new Set(checkIns.map(row => String(row?.user_id || "")).filter(id => activeUserIds.has(id)));
+  if (!certifyingUserIds.size) return [];
+
+  const users = await fetchAllRows(env, "users?select=id,email");
+  const emails = new Set(users
+    .filter(row => certifyingUserIds.has(String(row?.id || "")))
+    .map(row => normEmail(row?.email))
+    .filter(email => EMAIL_RE.test(email)));
+  if (!emails.size) return [];
+
+  const [prefs, unsubs, bounces] = await Promise.all([
+    fetchAllRows(env, "email_prefs?lifecycle=eq.false&select=email"),
+    fetchAllRows(env, "email_unsub_log?channel=in.(lifecycle,all)&select=email"),
+    fetchAllRows(env, "email_bounces?or=(event.eq.suppressed,bounce_type.eq.Permanent)&select=email"),
+  ]);
+  for (const row of [...prefs, ...unsubs, ...bounces]) emails.delete(normEmail(row?.email));
+  return [...emails].sort();
+}
+function activeChallengeNoticeHtml() {
+  const body = `<div style="font-size:11px;letter-spacing:2px;color:#c8a84b;font-weight:800;margin-bottom:8px;">야나완 챌린지 안내</div>`
+    + `<div style="font-size:20px;font-weight:800;line-height:1.45;margin-bottom:16px;">지금 인증 중인 도전은<br />그대로 이어가세요</div>`
+    + `<p style="margin:0 0 12px;color:#5a5446;font-size:14px;line-height:1.75;">2026년 마지막 100일 도전이 시작됐지만, 현재 진행 중인 챌린지는 새로 신청할 필요가 없습니다.</p>`
+    + `<div style="margin:0 0 20px;padding:14px 16px;background:#faf7ef;border-left:3px solid #c8a84b;color:#3f3a30;font-size:14px;line-height:1.75;"><strong>중단하거나 다시 신청하지 마세요.</strong><br />기존 시작일, 인증 기록, 포인트와 마감일은 그대로 유지됩니다.</div>`
+    + `<div style="text-align:center;margin:8px 0 4px;"><a href="${ACTIVE_CHALLENGE_NOTICE_LINK}" style="display:inline-block;background:#c8a84b;color:#20160a;font-weight:800;text-decoration:none;padding:13px 26px;border-radius:12px;font-size:14px;">오늘 인증 이어가기</a></div>`
+    + `<p style="margin:18px 0 0;font-size:12px;color:#8a8270;text-align:center;line-height:1.6;">이 메일은 현재 챌린지 인증 회원에게 드리는 서비스 이용 안내입니다.</p>`;
+  return brandEmailHtml(body);
+}
+async function sendActiveChallengeNotice(req, env, cors) {
+  const admin = await requireAdmin(req, env);
+  if (!admin) return json({ ok: false, error: "unauthorized" }, 401, cors);
+  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
+  const mode = String(b.mode || "dry");
+  if (!["dry", "test", "send"].includes(mode)) return json({ ok: false, error: "bad_mode" }, 400, cors);
+  let recipients;
+  try { recipients = await fetchActiveChallengeNoticeAudience(env); }
+  catch (error) { return json({ ok: false, error: "audience_failed", detail: String(error?.message || error) }, 502, cors); }
+  if (mode === "dry") return json({ ok: true, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length }, 200, cors);
+
+  const subject = "[야나완] 지금 인증 중인 도전은 그대로 이어가세요";
+  const html = activeChallengeNoticeHtml();
+  if (mode === "test") {
+    const result = env.ADMIN_EMAIL
+      ? await sendResendBatch(env, { to: [env.ADMIN_EMAIL], subject, html, channel: "lifecycle", campaignKey: `${ACTIVE_CHALLENGE_NOTICE_CAMPAIGN}-test` })
+      : { sent: 0, failed: 1 };
+    return json({ ok: result.sent === 1, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed }, result.sent === 1 ? 200 : 502, cors);
+  }
+  const result = await sendResendBatch(env, { to: recipients, subject, html, channel: "lifecycle", campaignKey: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN });
+  return json({ ok: result.failed === 0, mode, campaign: ACTIVE_CHALLENGE_NOTICE_CAMPAIGN, recipients: recipients.length, sent: result.sent, failed: result.failed }, result.failed === 0 ? 200 : 502, cors);
 }
 
 const RESEND_TEMPLATE_ALIASES = { newSpaceAnnouncement: "new-space-announcement" };
@@ -3075,6 +3153,7 @@ export default {
       if (path === "/api/admin/send-sentence") return sendSentenceDigest(req, env, cors);
       if (path === "/api/admin/send-content") return sendContentUpdate(req, env, cors);
       if (path === "/api/admin/send-resend-template") return sendResendTemplateAudience(req, env, cors);
+      if (path === "/api/admin/send-active-challenge-notice") return sendActiveChallengeNotice(req, env, cors);
       return json({ ok: false, error: "not_found" }, 404, cors);
     }
 
