@@ -9,6 +9,7 @@
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
+import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs";
 import { classEmailRecoveryRoute, RECOVERY_KIND } from "./class-email-recovery.mjs";
 import {
   classBookRequestSatisfied,
@@ -2396,7 +2397,7 @@ async function cafeRosterDecision(env, campaign, cafeNickname, naverId) {
 }
 
 // 회원 통지 — 정보성 1회. 발송 전 차단목록 3단(7/24 사고 재발 방지), 발송 ID 를 행에 감사.
-async function cafeNotifyMember(env, reqRow, kind) {
+async function cafeNotifyMember(env, reqRow, kind, attemptKey = "initial") {
   const email = reqRow.login_email;
   const T = {
     received: ["[리터스텔라] 카페 수강 연결 신청이 접수됐어요", "<p>카페 수강 명단과 입력해 주신 정보를 확인한 뒤 알려드릴게요.</p><p>확인은 보통 1~2일 안에 끝나요.</p>"],
@@ -2404,19 +2405,22 @@ async function cafeNotifyMember(env, reqRow, kind) {
     needinfo: ["[리터스텔라] 수강 연결에 추가 확인이 필요해요", `<p>입력해 주신 정보만으로는 명단에서 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>신청 화면에서 내용을 보완해 다시 제출해 주세요.</p>`],
     rejected: ["[리터스텔라] 수강 연결을 확인하지 못했어요", `<p>카페 수강 명단에서 신청 정보를 확인하지 못했어요.</p>${reqRow.admin_note ? `<p>운영자 안내: ${escHtml(reqRow.admin_note)}</p>` : ""}<p>착오가 있다고 생각되시면 카카오 채널로 알려주세요 — 직접 확인해 드려요.</p>`],
   }[kind];
-  if (!T) return null;
+  if (!T) return { ok: false, status: "failed", id: null, error: "bad_kind" };
   if (await isEmailSuppressed(env, email, "auth")) {
     const recovered = await tryAutoUnsuppress(env, email, "auth");
-    if (!recovered) { await notifySuppressedAttempt(env, email); return "suppressed"; }
+    if (!recovered) {
+      await notifySuppressedAttempt(env, email);
+      return cafeMailResult({ providerResult: null, suppressed: true });
+    }
   }
   const sent = await sendResendEmail(env, {
     to: email,
     subject: T[0],   // "수강 연결" 포함 → TX_SUBJECT_RE 에 걸려 반송 즉시 알림 대상
     html: brandEmailHtml(T[1]),
-    idempotencyKey: `cafetr:${reqRow.id}:${kind}`,
+    idempotencyKey: `cafetr:${reqRow.id}:${kind}:${attemptKey}`,
     lane: "auth",
   });
-  return typeof sent === "string" ? sent : (sent ? "sent" : null);
+  return cafeMailResult({ providerResult: sent });
 }
 
 // 승인 시 실제로 여는 것 — 자동·수동이 **같은 함수**를 쓴다(두 벌이면 한쪽만 고쳐져 어긋난다).
@@ -2533,7 +2537,14 @@ async function cafeTransferRequest(req, env, cors) {
           method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ granted_books: books }),
         }).catch(() => {});
         row = { ...claimed, granted_books: books };
-        try { const mid = await cafeNotifyMember(env, row, "approved"); if (mid) await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ approved_email_id: mid }) }); } catch { /* 비차단 */ }
+        try {
+          const attemptedAt = new Date().toISOString();
+          const mail = await cafeNotifyMember(env, row, "approved", "auto");
+          await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, {
+            method: "PATCH", headers: { Prefer: "return=minimal" },
+            body: JSON.stringify(cafeDecisionEmailPatch({ kind: "approved", result: mail, attemptedAt, previousAttempts: row.decision_email_attempts })),
+          });
+        } catch { /* 수강권 승인은 유지하고 메일 감사 실패는 로그/관리자 재시도로 복구 */ }
         console.log(JSON.stringify({ evt: "cafe_transfer_auto_approved", id: String(row.id).slice(0, 8), campaign, books }));
         return json({ ok: true, request: { status: "approved", campaign, adminNote: null, grantedBooks: books } }, 200, cors);
       }
@@ -2550,7 +2561,10 @@ async function cafeTransferRequest(req, env, cors) {
   }
   // 통지 2건 — 실패해도 접수는 성립(비차단). 발송 ID 는 행에 감사.
   const audit = {};
-  try { const mid = await cafeNotifyMember(env, row, "received"); if (mid) audit.member_email_id = mid; } catch { /* 비차단 */ }
+  try {
+    const receivedMail = await cafeNotifyMember(env, row, "received");
+    if (receivedMail.ok && receivedMail.id) audit.member_email_id = receivedMail.id;
+  } catch { /* 비차단 */ }
   try {
     if (env.ADMIN_EMAIL) {
       const rid = String(row.id).slice(0, 8);
@@ -2588,34 +2602,6 @@ async function cafeTransferMine(req, env, cors) {
   return json({ ok: true, request: { status: row.status, campaign, adminNote: showNote ? (row.admin_note || null) : null } }, 200, cors);
 }
 
-// 밀린 승인 통지 재발송 — 승인은 됐는데 메일이 안 나간 행을 찾아 보낸다.
-//   왜 필요한가: 2026-08-27 자동 승인을 켜면서 이미 쌓여 있던 6건을 SQL 로 소급 승인했는데,
-//   그 경로는 워커를 안 타서 통지가 빠졌다. 회원은 수업이 열린 줄 모른다.
-//   멱등: member_email_id 가 비어 있는 행만 + Resend idempotencyKey 로 이중 발송이 막힌다.
-//   🔴 라일라 알림은 여기서 안 만든다 — 클래스 앱 GrantWelcomeModal 이 로그인 시 신규 소유를
-//      감지해 addTellaEvent 를 쏜다('이메일=라일라' 규칙의 기존 구현). 서버가 또 만들면 두 번 뜬다.
-async function cafeResendMissingNotices(env) {
-  // 🔴 member_email_id 로 판별하면 안 된다 — 그건 **접수 안내** 발송 ID 라 신청 시점에 이미 차 있다.
-  //   승인 통지 여부는 approved_email_id 로 따로 본다(2026-08-27 교정).
-  const r = await sbFetch(env, `cafe_transfer_requests?status=eq.approved&approved_email_id=is.null&select=*&limit=50`);
-  if (!r.ok) return { checked: 0, sent: 0 };
-  const rows = await r.json();
-  let sent = 0;
-  for (const row of rows) {
-    try {
-      const mid = await cafeNotifyMember(env, row, "approved");
-      if (mid) {
-        sent += 1;
-        await sbFetch(env, `cafe_transfer_requests?id=eq.${row.id}`, {
-          method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ approved_email_id: mid }),
-        }).catch(() => {});
-      }
-    } catch { /* 한 건 실패가 나머지를 막지 않는다 */ }
-  }
-  if (rows.length) console.log(JSON.stringify({ evt: "cafe_resend_missing_notices", checked: rows.length, sent }));
-  return { checked: rows.length, sent };
-}
-
 // GET /api/admin/cafe-transfer-requests?status=&campaign=
 async function adminCafeTransferList(req, env, cors) {
   if (!(await requireAdminUser(req, env))) return json({ ok: false, error: "not_admin" }, 403, cors);
@@ -2625,21 +2611,25 @@ async function adminCafeTransferList(req, env, cors) {
   const f = [];
   if (["pending", "needinfo", "approved", "rejected"].includes(st)) f.push(`status=eq.${st}`);
   if (CAFE_CAMPAIGN_GRANTS[camp]) f.push(`campaign=eq.${camp}`);
-  // 목록을 여는 김에 밀린 승인 통지를 보낸다(멱등). 운영자가 결과를 확인하러 오는 자리다.
-  let resent = { checked: 0, sent: 0 };
-  try { resent = await cafeResendMissingNotices(env); } catch { /* 비차단 */ }
-  const r = await sbFetch(env, `cafe_transfer_requests?select=id,campaign,status,created_at,login_email,cafe_nickname,naver_id,roster_match,admin_note,granted_books${f.length ? "&" + f.join("&") : ""}&order=created_at.desc&limit=100`);
+  // GET은 읽기 전용이다. 목록 새로고침이 메일 재발송을 일으키면 실패 조사와 중복 방지가 불가능하다.
+  const r = await sbFetch(env, `cafe_transfer_requests?select=id,campaign,status,created_at,login_email,cafe_nickname,naver_id,roster_match,admin_note,granted_books,decision_email_kind,decision_email_status,decision_email_id,decision_email_error,decision_email_attempted_at,decision_email_attempts${f.length ? "&" + f.join("&") : ""}&order=created_at.desc&limit=100`);
   if (!r.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const rows = (await r.json()).map((x) => ({
     id: x.id, campaign: x.campaign, status: x.status, created_at: x.created_at,
     login_email: x.login_email, cafe_nickname: x.cafe_nickname,
     naver_id_masked: `${maskNaverId(x.naver_id)} · ${cafeRosterMatchLabel(x.roster_match)}`,
     admin_note: x.admin_note, granted_books: x.granted_books,
+    decision_email_kind: x.decision_email_kind,
+    decision_email_status: x.decision_email_status,
+    decision_email_id: x.decision_email_id,
+    decision_email_error: x.decision_email_error,
+    decision_email_attempted_at: x.decision_email_attempted_at,
+    decision_email_attempts: x.decision_email_attempts,
   }));
-  return json({ ok: true, requests: rows, resentNotices: resent.sent }, 200, cors);
+  return json({ ok: true, requests: rows }, 200, cors);
 }
 
-// POST /api/admin/cafe-transfer-request/decide {id, action:'approve'|'needinfo'|'reject', adminNote}
+// POST /api/admin/cafe-transfer-request/decide {id, action:'approve'|'needinfo'|'reject'|'resend', adminNote}
 async function adminCafeTransferDecide(req, env, cors) {
   const admin = await requireAdminUser(req, env);
   if (!admin) return json({ ok: false, error: "not_admin" }, 403, cors);
@@ -2647,18 +2637,23 @@ async function adminCafeTransferDecide(req, env, cors) {
   const id = String(body.id || "").trim();
   const action = String(body.action || "").trim();
   const adminNote = String(body.adminNote || "").trim().slice(0, 500);   // 🔴 형제(class-link)는 'note' — 여기만 adminNote
-  if (!id || !["approve", "needinfo", "reject"].includes(action)) return json({ ok: false, error: "bad_request" }, 400, cors);
+  if (!id || !["approve", "needinfo", "reject", "resend"].includes(action)) return json({ ok: false, error: "bad_request" }, 400, cors);
   const rowR = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}&select=*&limit=1`);
   if (!rowR.ok) return json({ ok: false, error: "upstream" }, 502, cors);
   const row = (await rowR.json())[0];
   if (!row) return json({ ok: false, error: "not_found" }, 404, cors);
-  const status = action === "approve" ? "approved" : action === "needinfo" ? "needinfo" : "rejected";
+  if (action === "resend" && !["approved", "needinfo", "rejected"].includes(row.status)) {
+    return json({ ok: false, error: "nothing_to_resend" }, 409, cors);
+  }
+  const status = action === "resend" ? row.status : action === "approve" ? "approved" : action === "needinfo" ? "needinfo" : "rejected";
   const now = new Date().toISOString();
   let rosterKeyManual = row.roster_match === "exact" ? `${row.campaign}:${cafeNorm(row.cafe_nickname)}` : null;
   let reviewedMatch = row.roster_match || "none";
   let grantedBooks = null;
   let updated;
-  if (action === "approve") {
+  if (action === "resend") {
+    updated = row;
+  } else if (action === "approve") {
     if (!CAFE_CAMPAIGN_GRANTS[row.campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
     try {
       const decision = await cafeRosterDecision(env, row.campaign, row.cafe_nickname, row.naver_id);
@@ -2699,13 +2694,21 @@ async function adminCafeTransferDecide(req, env, cors) {
     if (!up.ok) return json({ ok: false, error: "save_failed" }, 502, cors);
     updated = (await up.json())[0];
   }
+  let mail = { ok: false, status: "failed", id: null, error: "send_exception" };
   try {
-    const mid = await cafeNotifyMember(env, updated, status);
-    // 승인 통지는 approved_email_id 에 — 접수 통지(member_email_id)를 덮지 않는다.
-    if (mid) await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(status === "approved" ? { approved_email_id: mid } : { member_email_id: mid }) });
-  } catch { /* 통지 실패 비차단 — 상태는 관리자 화면·mine 조회로 보인다 */ }
-  console.log(JSON.stringify({ evt: "cafe_transfer_decide", id: id.slice(0, 8), action, by: admin.email, books: grantedBooks || "-" }));
-  return json({ ok: true }, 200, cors);
+    mail = await cafeNotifyMember(env, updated, status, now);
+  } catch (error) {
+    console.log(JSON.stringify({ evt: "cafe_transfer_mail_exception", id: id.slice(0, 8), status, detail: String(error).slice(0, 120) }));
+  }
+  const mailPatch = cafeDecisionEmailPatch({
+    kind: status, result: mail, attemptedAt: now, previousAttempts: row.decision_email_attempts,
+  });
+  const mailAudit = await sbFetch(env, `cafe_transfer_requests?id=eq.${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(mailPatch),
+  });
+  if (!mailAudit.ok) return json({ ok: false, error: "mail_audit_save_failed", decisionSaved: action !== "resend" }, 502, cors);
+  console.log(JSON.stringify({ evt: "cafe_transfer_decide", id: id.slice(0, 8), action, by: admin.email, books: grantedBooks || "-", mail: mail.status }));
+  return json({ ok: true, email: { status: mail.status, id: mail.id, error: mail.error } }, 200, cors);
 }
 
 // ── 백업 이메일 (운영자 지시 2026-08-26) — 아이디·이메일 분실 대비 ─────────────────
