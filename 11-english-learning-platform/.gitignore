@@ -1,0 +1,6 @@
+.wrangler/
+node_modules/
+dist-english-learning-platform/
+.dev.vars
+.env*
+!.env.example

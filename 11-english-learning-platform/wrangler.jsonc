@@ -1,0 +1,9 @@
+{
+  "$schema": "../01-reading-diagnosis/literstella-reading-diagnosis/node_modules/wrangler/config-schema.json",
+  "name": "literstella-english-learning",
+  "compatibility_date": "2026-09-05",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "english.literstella.co.kr", "custom_domain": true }],
+  "assets": { "directory": "./dist-english-learning-platform", "not_found_handling": "single-page-application", "html_handling": "auto-trailing-slash" }
+}
