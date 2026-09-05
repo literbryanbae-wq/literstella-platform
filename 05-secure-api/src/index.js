@@ -2397,6 +2397,24 @@ async function cafeRosterDecision(env, campaign, cafeNickname, naverId) {
 }
 
 // 회원 통지 — 정보성 1회. 발송 전 차단목록 3단(7/24 사고 재발 방지), 발송 ID 를 행에 감사.
+// 운영자 명시 재발송 전용 1회 강제 해제 — tryAutoUnsuppress 와 별개 예산(admin-unsup:).
+// 반송 관측 주소도 여기서는 1회 풀어 본다: 명시적 사람 판단 + 실패 시 자동 재차단으로 위험이 1통에 갇힌다.
+async function adminForceUnsuppressOnce(env, rawEmail) {
+  const email = String(rawEmail || "").trim().toLowerCase();
+  if (!email || !env.AUTH_EMAIL_SERVICE) return { attempted: false };
+  const key = `admin-unsup:${email}`;
+  try {
+    if (env.OTP_GUARD && await env.OTP_GUARD.get(key)) return { attempted: false, reason: "already_used" };
+    const r = await env.AUTH_EMAIL_SERVICE.removeSuppression(email);
+    console.log(JSON.stringify({ evt: "cafe_admin_force_unsuppress", ok: Boolean(r?.ok), status: r?.status || 200 }));
+    if (r?.ok && env.OTP_GUARD) await env.OTP_GUARD.put(key, "1", { expirationTtl: 90 * 86400 });
+    return { attempted: true, ok: Boolean(r?.ok) };
+  } catch (e) {
+    console.log(JSON.stringify({ evt: "cafe_admin_force_unsuppress", ok: false, detail: String(e).slice(0, 80) }));
+    return { attempted: true, ok: false };
+  }
+}
+
 async function cafeNotifyMember(env, reqRow, kind, attemptKey = "initial") {
   const email = reqRow.login_email;
   const T = {
@@ -2653,6 +2671,11 @@ async function adminCafeTransferDecide(req, env, cors) {
   let updated;
   if (action === "resend") {
     updated = row;
+    // 운영자 명시 재발송의 1회 강제 차단 해제(2026-09-05 운영자 지시 — "재발송이 안 된다").
+    // 자동 해제(tryAutoUnsuppress)는 반송 이력이 관측된 주소를 절대 풀지 않는다 — 그 보호는 유지하되,
+    // 사람이 '이 메일을 다시 보내라'고 한 주소는 별도 예산으로 주소당 1회만 풀어 본다.
+    // 또 반송되면 웹훅이 기록하고 Resend 가 다시 차단 → 예산 소진으로 그걸로 종결(도메인 평판 보호).
+    await adminForceUnsuppressOnce(env, row.login_email);
   } else if (action === "approve") {
     if (!CAFE_CAMPAIGN_GRANTS[row.campaign]) return json({ ok: false, error: "bad_campaign" }, 400, cors);
     try {
@@ -3043,9 +3066,9 @@ export default {
     if (path === "/api/admin/class-link-requests") {
       return adminClassLinkList(req, env, cors);
     }
-    if (path === "/api/admin/class-link-request/decide") {
-      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
-      return adminClassLinkDecide(req, env, cors);
+    if (path === "/api/admin/class-link-request/decide") {
+      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
+      return adminClassLinkDecide(req, env, cors);
     }
 
     // ── 카페 수강권 이관 (2026-08-26) — 관리자 GET 이 있어 /api/admin/ prefix 블록(POST 강제) 위에 둔다
