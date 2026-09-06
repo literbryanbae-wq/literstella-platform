@@ -50,7 +50,7 @@
     "PORTONE_BILLING_CHANNEL_KEY": "channel-key-3917d309-e69b-44b6-a0d5-2c7e3b727165",
     // CORS 허용 Origin (쉼표구분) — 프론트 도메인만. 클래스 앱(강독 이관, 2026-07-18) 추가:
     //   class-new=스테이징 · class=컷오버 후 · pages.dev=배포 프리뷰 QA
-    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev"
+    "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev,https://english.literstella.co.kr"
   },
 
   // 배포 시 secret으로 주입 (wrangler secret put <NAME>):
@@ -65,7 +65,7 @@
 
   // 2026-08-01 회원 안내 1회성 발송. scheduled 핸들러가 연도를 검사하므로 이후 연도에는 no-op.
   // 발송 완료 후 두 Cron을 제거한다. 자동갱신 Cron은 별도 도입 시 추가.
-  "triggers": { "crons": [] },
+  "triggers": { "crons": ["25 18 * * *"] },
 
   "observability": { "enabled": true }
 }

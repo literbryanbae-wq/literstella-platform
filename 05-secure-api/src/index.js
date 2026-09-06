@@ -11,6 +11,7 @@ import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
 import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs";
 import { classEmailRecoveryRoute, RECOVERY_KIND } from "./class-email-recovery.mjs";
+import { growthPanelRoute } from "./growth-panel-service.mjs";
 import {
   classBookRequestSatisfied,
   classEnrollmentEmailCandidates,
@@ -973,6 +974,24 @@ async function maybeAlertBounceSurge(env, row) {
 
 const RESEND_MIGRATION_TEMPLATE = "8511cc4c-1f05-412c-a1c0-cfea2358ca2f";
 const MIGRATION_CRON = "50 23 30 7 *"; // 2026-07-31 08:50 KST, one-time send
+const GROWTH_PANEL_PURGE_CRON = "25 18 * * *"; // 매일 03:25 KST — 신청별 90일 보관기한 경과분 파기
+
+async function purgeExpiredGrowthPanelApplications(env) {
+  let status = 0;
+  try {
+    const response = await sbFetch(env, "rpc/growth_panel_purge_expired", {
+      method: "POST",
+      body: "{}",
+    });
+    status = Number(response?.status) || 0;
+    if (!response?.ok) throw new Error("upstream_rejected");
+    console.log(JSON.stringify({ evt: "growth_panel_purge_complete", status }));
+  } catch {
+    // 응답 본문·회원 정보·환경 값은 로그에 남기지 않는다.
+    console.error(JSON.stringify({ evt: "growth_panel_purge_failed", status: status || "network" }));
+    throw new Error("growth_panel_purge_failed");
+  }
+}
 
 async function fetchAllResendContacts(env) {
   const contacts = [];
@@ -3011,6 +3030,15 @@ export default {
       authMailerBound: Boolean(env.AUTH_EMAIL_SERVICE),
     }, 200, cors);
 
+    // 성장 패널 신청 — 기존 Supabase JWT 검증과 service_role 전송 경계를 재사용한다.
+    if (path.startsWith("/api/growth-panel/")) {
+      return growthPanelRoute(req, env, cors, path.replace("/api/growth-panel/", ""), {
+        json,
+        requireUser,
+        sbFetch,
+      });
+    }
+
     // 셀프 회원 탈퇴 — 로그인 JWT 필수 + confirm:"DELETE" 명시 신호.
     if (path === "/api/account/delete") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
@@ -3209,6 +3237,10 @@ export default {
     const scheduledDate = new Date(event.scheduledTime);
     if (event.cron === MIGRATION_CRON) {
       if (scheduledDate.getUTCFullYear() === 2026) ctx.waitUntil(runMigrationNoticeCampaign(env));
+      return;
+    }
+    if (event.cron === GROWTH_PANEL_PURGE_CRON) {
+      await purgeExpiredGrowthPanelApplications(env);
       return;
     }
     if (env.PAYMENT_ENABLED !== "true") return;
