@@ -7,6 +7,7 @@
 // =============================================================
 
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
+import { lifecycleMailKey, lifecycleClaimDecision } from "./lifecycle-idempotency.js";
 import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
 import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs";
@@ -1577,15 +1578,83 @@ async function lifecycleEmail(req, env, cors) {
     }
   } catch { /* 조회 실패가 발송을 막지는 않는다 — 정보성이라 기본 수신 */ }
   const data = (b.data && typeof b.data === "object") ? b.data : {};
+  // 🔴 발송 멱등은 **여기(발송자)** 에서 (2026-09-08, 운영자 승인). 브라우저 플래그(mailOnce)는 호출 절약일 뿐 근거가 아니다 —
+  //   폰·PC 두 대면 두 번 갔고, 발송 실패도 '보냈다'로 굳었다. 원장 lifecycle_mail_sends(email, mail_key) 1행 = 1통.
+  //   순서: 옵트아웃(위, claim 소모 안 함) → 원자 claim → suppression 사전조회 → 렌더 → Resend(Idempotency-Key) → 결과 되쓰기.
+  //   컷오프: 배포 시점에 이미 조건이 충족된 (회원,키)는 sealed 행(private.lifecycle_mail_seal_v1) 이라 skip 된다.
+  const mailKey = lifecycleMailKey(key, data);
+  const claim = await lifecycleClaim(env, to, mailKey);
+  if (!claim.claimed) {
+    if (claim.skipped) return json({ ok: true, skipped: claim.skipped, mailKey }, 200, cors);
+    return json({ ok: false, error: "claim_failed", mailKey }, 503, cors);
+  }
+  // Resend 는 차단 주소에도 200+id 를 준다 → 보내기 전에 묻고, 차단이면 suppressed 로 남겨 해제 뒤 재claim 대상이 되게 한다.
+  if (await isEmailSuppressed(env, to)) {
+    await lifecycleSettle(env, claim.id, { status: "suppressed", last_error: "suppressed" });
+    return json({ ok: false, error: "suppressed", mailKey }, 422, cors);
+  }
   let rendered;
-  try { rendered = renderEmail(key, data); } catch { return json({ ok: false, error: "render" }, 500, cors); }
+  try { rendered = renderEmail(key, data); } catch {
+    await lifecycleSettle(env, claim.id, { status: "failed", last_error: "render" });
+    return json({ ok: false, error: "render" }, 500, cors);
+  }
   // 정보성 수신 설정 링크(마이페이지 알림설정). 추후 토큰형 수신거부로 교체 가능.
   // 본문 수신거부 링크도 실제로 동작하는 토큰 링크로 바꾼다(전에는 설정 화면으로만 보냈다).
   const unsubUrl = `${API_ORIGIN(env)}/api/unsub?t=${await unsubToken(env, to, "lifecycle")}`;
   const unsub = `<a href="${unsubUrl}" style="color:#c8a84b;text-decoration:none;">수신거부</a> · <a href="https://challenge.literstella.co.kr/?view=settings&tab=notify" style="color:#c8a84b;text-decoration:none;">수신 설정</a> · 발신: 리터스텔라`;
   const html = rendered.html.replace(/\{\{unsubscribe\}\}/g, unsub);
-  const ok = await sendResendEmail(env, { to, subject: rendered.subject, html });
-  return json({ ok }, ok ? 200 : 502, cors);
+  const ok = await sendResendEmail(env, { to, subject: rendered.subject, html, idempotencyKey: `lifecycle:${mailKey}:${to}` });
+  if (ok) await lifecycleSettle(env, claim.id, { status: "sent", provider_id: typeof ok === "string" ? ok : null, sent_at: new Date().toISOString(), last_error: null });
+  else await lifecycleSettle(env, claim.id, { status: "failed", last_error: "resend_fail" });
+  return json({ ok: Boolean(ok), mailKey, attempts: claim.attempts }, ok ? 200 : 502, cors);
+}
+
+// 원자 claim — 행이 없으면 INSERT(ignore-duplicates 로 경합 안전), 있으면 상태에 따라 skip / 조건부 PATCH 재claim(CAS).
+//   반환 {claimed:true,id,attempts} | {claimed:false, skipped:'sent'|'sealed'|'in_progress'} | {claimed:false, error}
+async function lifecycleClaim(env, to, mailKey) {
+  const nowIso = new Date().toISOString();
+  let ins;
+  try {
+    ins = await sbFetch(env, "lifecycle_mail_sends?on_conflict=email,mail_key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates,return=representation" },
+      body: JSON.stringify({ email: to, mail_key: mailKey, status: "sending", claimed_at: nowIso, updated_at: nowIso, source: "worker" }),
+    });
+  } catch (e) { console.log(JSON.stringify({ evt: "lifecycle_claim_fail", stage: "insert", detail: String(e).slice(0, 120) })); return { claimed: false, error: "claim_failed" }; }
+  if (!ins.ok) { console.log(JSON.stringify({ evt: "lifecycle_claim_fail", stage: "insert", status: ins.status })); return { claimed: false, error: "claim_failed" }; }
+  const inserted = await ins.json().catch(() => []);
+  if (Array.isArray(inserted) && inserted.length) return { claimed: true, id: inserted[0].id, attempts: 1 };
+  // 중복 → 기존 행을 보고 결정
+  let row = null;
+  try {
+    const g = await sbFetch(env, `lifecycle_mail_sends?email=eq.${encodeURIComponent(to)}&mail_key=eq.${encodeURIComponent(mailKey)}&select=id,status,attempts,claimed_at,updated_at&limit=1`);
+    if (g.ok) row = (await g.json())[0] || null;
+  } catch { /* 아래에서 claim_failed */ }
+  if (!row) return { claimed: false, error: "claim_failed" };
+  const d = lifecycleClaimDecision(row, Date.now());
+  if (d.action === "skip") return { claimed: false, skipped: d.reason };
+  // reclaim: status 가 그대로일 때만 바뀐다(다른 요청이 먼저 잡았으면 0행)
+  try {
+    const p = await sbFetch(env, `lifecycle_mail_sends?id=eq.${encodeURIComponent(row.id)}&status=eq.${encodeURIComponent(row.status)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify({ status: "sending", claimed_at: nowIso, updated_at: nowIso, attempts: (Number(row.attempts) || 0) + 1 }),
+    });
+    const rows = p.ok ? await p.json().catch(() => []) : [];
+    if (Array.isArray(rows) && rows.length) return { claimed: true, id: row.id, attempts: (Number(row.attempts) || 0) + 1 };
+  } catch (e) { console.log(JSON.stringify({ evt: "lifecycle_claim_fail", stage: "reclaim", detail: String(e).slice(0, 120) })); }
+  return { claimed: false, skipped: "in_progress" };
+}
+
+// 결과 되쓰기. 실패해도 삼키지 않고 로그 — 'sending' 으로 남으면 10분 뒤 stale 재claim 이 회수한다.
+async function lifecycleSettle(env, id, patch) {
+  try {
+    const r = await sbFetch(env, `lifecycle_mail_sends?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }),
+    });
+    if (!r.ok) console.log(JSON.stringify({ evt: "lifecycle_settle_fail", status: r.status, patch: patch.status }));
+  } catch (e) { console.log(JSON.stringify({ evt: "lifecycle_settle_fail", detail: String(e).slice(0, 120), patch: patch.status })); }
 }
 // ── OTP 무차별 대입 가드 (2026-08-12) ──────────────────────────────────────────
 //   🔴 배경: OTP 토큰 = `exp.HMAC(OTP_SECRET, "code:email:code:exp")` 를 **응답으로 그대로 돌려준다**.
