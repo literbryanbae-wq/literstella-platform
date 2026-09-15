@@ -1,17 +1,19 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ArrowRight, ArrowUpRight, ChevronRight, Gift, Menu, MessageCircle, Monitor, Moon, Sun, Timer, X } from 'lucide-react';
-import { APP_NAMES, APP_HOME, EVENTS, NETWORK, KAKAO_URL, eventEnded, eventPath, eventRoute, safeReturn, eventOrigin, savedEventContext } from './catalog.mjs';
+import { ArrowLeft, ArrowRight, ArrowUpRight, ChevronRight, Gift, LayoutGrid, Menu, MessageCircle, Monitor, Moon, Sun, Timer, X } from 'lucide-react';
+import { APP_NAMES, APP_HOME, EVENTS, KAKAO_URL, eventEnded, eventPath, eventRoute, safeReturn, eventOrigin, savedEventContext } from './catalog.mjs';
+import { ServiceMenuCards } from '../service-discovery/ServiceDiscoveryDashboard.jsx';
 import './navigation.css';
 
 const dispatch = (type, detail) => window.dispatchEvent(new CustomEvent(type, { detail }));
 export const openMenu = () => dispatch('ls:menu');
+export const openServiceMenu = () => dispatch('ls:services');
 export const openEvents = (slug = '') => dispatch('ls:events', { slug });
 export const openHighlights = () => dispatch('ls:highlights');
-export function NavigationButtons({ compact = false }) {
+export function NavigationButtons({ compact = false, eventsOnly = false }) {
   return <div className={`lsne-buttons${compact ? ' is-compact' : ''}`}>
     <button type="button" onClick={() => openEvents()} aria-label="이벤트 전체보기" title="이벤트"><Gift size={20} /><span>이벤트</span><i aria-hidden="true" /></button>
-    <button type="button" onClick={openMenu} aria-label="전체 메뉴 열기" aria-haspopup="dialog" title="전체 메뉴"><Menu size={21} /><span>전체 메뉴</span></button>
+    {!eventsOnly && <button type="button" onClick={openMenu} aria-label="앱 메뉴 열기" aria-haspopup="dialog" title="앱 메뉴"><Menu size={21} /><span>앱 메뉴</span></button>}
   </div>;
 }
 function Art({ event }) {
@@ -120,6 +122,7 @@ export default function NavigationHub({ app = 'class', sections = [], onAction, 
   };
   useEffect(() => {
     const menu = () => showModal('menu');
+    const services = () => showModal('services');
     const events = e => showEvents(typeof e.detail?.slug === 'string' ? e.detail.slug : '');
     const highlights = () => showModal('highlights');
     const pop = () => {
@@ -127,8 +130,8 @@ export default function NavigationHub({ app = 'class', sections = [], onAction, 
       const next = afterClose.current; afterClose.current = null;
       if (next) setTimeout(next, 0);
     };
-    window.addEventListener('ls:menu', menu); window.addEventListener('ls:events', events); window.addEventListener('ls:highlights', highlights); window.addEventListener('popstate', pop);
-    return () => { window.removeEventListener('ls:menu', menu); window.removeEventListener('ls:events', events); window.removeEventListener('ls:highlights', highlights); window.removeEventListener('popstate', pop); };
+    window.addEventListener('ls:menu', menu); window.addEventListener('ls:services', services); window.addEventListener('ls:events', events); window.addEventListener('ls:highlights', highlights); window.addEventListener('popstate', pop);
+    return () => { window.removeEventListener('ls:menu', menu); window.removeEventListener('ls:services', services); window.removeEventListener('ls:events', events); window.removeEventListener('ls:highlights', highlights); window.removeEventListener('popstate', pop); };
   }, []);
   useEffect(() => { setRoute(eventRoute(window.location.pathname)); }, [locationKey]);
   // Adapter actions own login, mode switching and existing in-app tools.
@@ -160,7 +163,7 @@ export default function NavigationHub({ app = 'class', sections = [], onAction, 
   const localGroups = sections.filter(s => !['account','support','account-support'].includes(s.id));
   const supportGroups = sections.filter(s => ['account','support','account-support'].includes(s.id));
   const event = EVENTS.find(e => e.id === route?.id);
-  const modalTitle = {menu:'전체 메뉴',timer:'독서 타이머',appearance:'화면 설정',highlights:'리터스텔라 이벤트'}[modal];
+  const modalTitle = {menu:`${APP_NAMES[app]} 메뉴`,services:'전체 메뉴',timer:'독서 타이머',appearance:'화면 설정',highlights:'리터스텔라 이벤트'}[modal];
   const page = route && <FocusLayer page dark={dark} title="리터스텔라 이벤트" scrollKey={`${route.id || 'list'}:${filter}`}>
     <header className="lsne-page-header"><button className="lsne-brand" onClick={() => go(APP_HOME[app] || '/')} aria-label={`${APP_NAMES[app]} 홈`}><img src="/brand/shared/logo-symbol.png" alt="" /><img className="lsne-wordmark" src="/navigation-events/logo-literstella-en.png" alt="Liter Stella" /></button><NavigationButtons /></header>
     <main className="lsne-main" key={route.id || 'list'}>
@@ -180,13 +183,12 @@ export default function NavigationHub({ app = 'class', sections = [], onAction, 
       <footer className="lsne-help"><a href={KAKAO_URL} target="_blank" rel="noopener noreferrer"><MessageCircle size={19} />카카오 문의<ArrowUpRight size={15} /></a></footer>
     </main>
   </FocusLayer>;
-  return <>{page}{modal && <FocusLayer dark={dark} title={modalTitle} onClose={() => closeModal()}>
+  return <>{createPortal(<button type="button" className="lsne-desktop-services" data-theme={dark ? 'dark' : 'light'} onClick={() => showModal('services')} aria-haspopup="dialog" aria-label="전체 메뉴: 다른 앱으로 이동" title="전체 메뉴"><LayoutGrid size={22} aria-hidden="true" /><span>전체 메뉴</span></button>, document.body)}{page}{modal && <FocusLayer dark={dark} title={modalTitle} onClose={() => closeModal()}>
     <header className="lsne-modal-header"><div><small>{APP_NAMES[app]}</small><h2>{modalTitle}</h2></div><button className="lsne-close" onClick={() => closeModal()} aria-label="메뉴 닫기"><X size={23} /></button></header>
     {modal === 'menu' ? <div className="lsne-menu-groups">
       {localGroups.map(group => <section key={group.id}><h3>{group.title}</h3>{group.items.map(item => <LinkRow key={item.id} item={item} onSelect={select} />)}</section>)}
-      <section><h3>이벤트·혜택 <span className="lsne-new">NEW</span></h3><LinkRow item={{label:'이벤트 전체보기'}} onSelect={() => showEvents('')} Icon={Gift} />{EVENTS.map(e => <LinkRow key={e.id} item={{label:e.title}} onSelect={() => showEvents(e.id)} />)}</section>
-      <section><h3>리터스텔라 전체 서비스</h3>{NETWORK.map(([id,label,href]) => <LinkRow key={id} item={{id,label,href}} Icon={id === 'timer' ? Timer : ArrowUpRight} onSelect={item => id === 'timer' ? showModal('timer') : select(item)} />)}</section>
+      <section><h3>이벤트·혜택 <span className="lsne-new">NEW</span></h3><LinkRow item={{label:'이벤트 전체보기'}} onSelect={() => showEvents('')} Icon={Gift} /></section>
       <section><h3>계정·지원</h3>{supportGroups.flatMap(group => group.items).map(item => <LinkRow key={item.id} item={item} onSelect={select} />)}<LinkRow item={{label:'카카오 문의',href:KAKAO_URL}} onSelect={select} Icon={MessageCircle} /></section>
-    </div> : modal === 'appearance' ? <div className="lsne-filters" role="group" aria-label="화면 모드">{[['light','데이',Sun],['dark','나이트',Moon],['system','기기',Monitor]].map(([value,label,Icon]) => <button type="button" key={value} aria-pressed={appearance?.value === value} onClick={() => appearance?.onChange(value)}><Icon size={20} />{label}</button>)}</div> : modal === 'timer' ? <div className="lsne-timer-choice"><button type="button" onClick={() => openTimer(true)}><Timer size={29} /><strong>클래식 타이머</strong><span>기존 독서 타이머</span></button><button type="button" onClick={() => openTimer(false)}><Art event={EVENTS[3]} /><strong>딱히그냥 타이머</strong><span>두 친구와 집중하기</span></button></div> : <><EventHighlights onSelect={showEvents} /><button type="button" className="lsne-text-link" onClick={() => showEvents('')}>이벤트 전체보기 <ArrowRight size={18} /></button></>}
+    </div> : modal === 'services' ? <ServiceMenuCards app={app} onSelect={card => select({ href: card.href })} onTimer={() => showModal('timer')} /> : modal === 'appearance' ? <div className="lsne-filters" role="group" aria-label="화면 모드">{[['light','데이',Sun],['dark','나이트',Moon],['system','기기',Monitor]].map(([value,label,Icon]) => <button type="button" key={value} aria-pressed={appearance?.value === value} onClick={() => appearance?.onChange(value)}><Icon size={20} />{label}</button>)}</div> : modal === 'timer' ? <div className="lsne-timer-choice"><button type="button" onClick={() => openTimer(true)}><Timer size={29} /><strong>클래식 타이머</strong><span>기존 독서 타이머</span></button><button type="button" onClick={() => openTimer(false)}><Art event={EVENTS[3]} /><strong>딱히그냥 타이머</strong><span>두 친구와 집중하기</span></button></div> : <><EventHighlights onSelect={showEvents} /><button type="button" className="lsne-text-link" onClick={() => showEvents('')}>이벤트 전체보기 <ArrowRight size={18} /></button></>}
   </FocusLayer>}</>;
 }
