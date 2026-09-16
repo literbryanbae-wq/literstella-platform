@@ -96,7 +96,6 @@ async function accountDelete(req, env, cors) {
   });
 
   const email = String(user.email || "").toLowerCase();
-  const stamp = new Date().toISOString();
   // 익명 이메일 — users.email이 NOT NULL·UNIQUE라 값이 필요하다. .invalid는 예약 TLD(실제 발송 불가).
   const anonEmail = `deleted+${user.id}@literstella.invalid`;
 
@@ -105,7 +104,7 @@ async function accountDelete(req, env, cors) {
     email: anonEmail, nickname: "탈퇴한 회원",
     phone: null, bio: null, avatar_url: null, blog_url: null, instagram_url: null,
     naver_id: null, country: null, city: null, diag_full_result: null,
-    auth_uid: null, marketing_consent: false, deleted_at: stamp,
+    auth_uid: null, marketing_consent: false,
   };
   let r = await sb(`/rest/v1/users?auth_uid=eq.${user.id}`, {
     method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch),
