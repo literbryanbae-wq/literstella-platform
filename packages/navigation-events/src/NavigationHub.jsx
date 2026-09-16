@@ -6,6 +6,117 @@ import { ServiceMenuCards } from '../service-discovery/ServiceDiscoveryDashboard
 import './navigation.css';
 
 const dispatch = (type, detail) => window.dispatchEvent(new CustomEvent(type, { detail }));
+
+// 와이드 플로팅 '전체 메뉴' — 드래그로 치울 수 있다(운영자 2026-09-16: 라일라·다른 메뉴와 겹친다).
+//   🔴 버튼 자체가 드래그 대상이라 **클릭과 구분**해야 한다 — 4px 문턱을 넘어야 이동으로 본다.
+//      문턱이 없으면 손이 미세하게 떨려도 메뉴가 안 열려 '고장난 버튼'이 된다.
+//   🔴 저장은 우/상단 오프셋(px) — 가장자 기준이라 창 크기가 바뀜도 매달린 모서리를 유지한다.
+//      불러올 때와 리사이즈 때 **다시 클램한다** — 안 하면 작은 화면에서 버튼이 화면 밖으로 나가 영영 못 누른다.
+//   ⚠️ body 포털 + 같은 class/마크업을 유지한다 — 영어앱이 `body > button.lsne-desktop-services` 로
+//      z-index 12002 를 덮어쓴다(fixed 표면 위로 올리기). 요소 종류나 포털 대상을 바꾸면 그게 깨진다.
+const LAUNCHER_POS_KEY = 'ls_nav_launcher_pos'; // { r, t } = 우/상단 오프셋 px
+const readLauncherPos = () => { try { const v = JSON.parse(localStorage.getItem(LAUNCHER_POS_KEY) || 'null'); return (v && Number.isFinite(v.r) && Number.isFinite(v.t)) ? v : null; } catch (_e) { return null; } };
+// 🔴 버튼 **자기 크기**를 빼야 화면 안에 남는다. 고정값(120/56)으로 두면 저장값이 클 때
+//    왼쪽·아래로 밀려 나가 눈에만 보이고 못 누른다(2026-09-16 실측으로 잡음).
+//    px 은 반올림한다 — 소수점 좌표는 버튼 글자를 번지게 한다.
+const clampLauncher = (r, t, el) => {
+  const box = el ? el.getBoundingClientRect() : null;
+  // 🔴 눈에 보이는 너비로 재면 **순환**이 된다 — 밀려난 버튼은 이미 좌방해 있어(83px)
+  //    그 값으로 클램하면 '맞다'고 판정해 그대로 둔다(2026-09-16 실측: left -6 재현).
+  //    scrollWidth 는 내용 너비라 눌려도 줄지 않는다 — 둘 중 큰 것을 쓴다.
+  const w = Math.max((box && box.width) || 0, (el && el.scrollWidth) || 0, 130);
+  const h = Math.max((box && box.height) || 0, (el && el.scrollHeight) || 0, 48);
+  // 🔴 innerWidth 가 아니라 clientWidth 다. innerWidth 는 **스크롤바를 포함**하고
+  //    CSS `right` 는 콘텐츠 가장자리 기준이라 그대로 섞으면 스크롤바 폭만큼(≈10px)
+  //    왼쪽으로 샐다(2026-09-16 실측: left -6). **재는 공간과 적용하는 공간을 같게 둔다.**
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+  return {
+    r: Math.round(Math.max(4, Math.min(Math.max(4, vw - w - 4), r))),
+    t: Math.round(Math.max(4, Math.min(Math.max(4, vh - h - 4), t))),
+  };
+};
+
+function DesktopServicesLauncher({ dark, onOpen }) {
+  const ref = useRef(null);
+  const moved = useRef(false);
+  const [pos, setPos] = useState(readLauncherPos);
+  // 🔴 화살표 연타는 한 번에 여러 건이 들어온다 — 매번 state 를 읽으면 **전부 같은 낡은 값**에서
+  //    계산해 마지막 하나만 반영된다(2026-09-16 실측: ↑↑→ 중 → 만 먹힘). ref 로 최신값을 들고 다닌다.
+  const posRef = useRef(pos);
+  const apply = (next, persist) => {
+    posRef.current = next;
+    setPos(next);
+    if (!persist) return;
+    try {
+      if (next) localStorage.setItem(LAUNCHER_POS_KEY, JSON.stringify(next));
+      else localStorage.removeItem(LAUNCHER_POS_KEY);
+    } catch (_e) { /* noop */ }
+  };
+
+  // 창이 작아지면 저장된 자리가 화면 밖일 수 있다 — 다시 안으로 끌어온다.
+  useEffect(() => {
+    if (!pos) return undefined;
+    const fit = () => {
+      const p = posRef.current;
+      if (!p) return;
+      const next = clampLauncher(p.r, p.t, ref.current);
+      // 고친 값은 저장에도 되돌려 쓴다 — 안 그러면 다음 번에 또 화면 밖 값을 읽는다.
+      if (next.r !== p.r || next.t !== p.t) apply(next, true);
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [pos && pos.r, pos && pos.t]);
+
+  const onPointerDown = (e) => {
+    if (e.button !== 0) return;
+    const el = ref.current; if (!el) return;
+    const box = el.getBoundingClientRect();
+    const r0 = document.documentElement.clientWidth - box.right, t0 = box.top;
+    const sx = e.clientX, sy = e.clientY;
+    moved.current = false;
+    let cur = { r: r0, t: t0 };
+    const move = (ev) => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!moved.current && Math.abs(dx) + Math.abs(dy) < 4) return; // 문턱 — 클릭을 죽이지 않는다
+      moved.current = true;
+      cur = clampLauncher(r0 - dx, t0 + dy, el);
+      apply(cur, false);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (moved.current) apply(cur, true);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  const onClick = () => { if (moved.current) { moved.current = false; return; } onOpen(); };
+
+  // 키보드 — 화살표 12px 씩, Home 으로 기본 자리 복귀(더블클릭은 클릭 2번과 언거서 안 쓴다).
+  const onKeyDown = (e) => {
+    if (e.key === 'Home') {
+      e.preventDefault(); apply(null, true);
+      return;
+    }
+    const step = { ArrowLeft: [12, 0], ArrowRight: [-12, 0], ArrowUp: [0, -12], ArrowDown: [0, 12] }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const el = ref.current; if (!el) return;
+    const box = el.getBoundingClientRect();
+    const base = posRef.current || { r: document.documentElement.clientWidth - box.right, t: box.top };
+    apply(clampLauncher(base.r + step[0], base.t + step[1], el), true);
+  };
+
+  return <button ref={ref} type="button" className="lsne-desktop-services" data-theme={dark ? 'dark' : 'light'}
+    style={pos ? { right: `${pos.r}px`, top: `${pos.t}px` } : undefined}
+    onPointerDown={onPointerDown} onClick={onClick} onKeyDown={onKeyDown}
+    aria-haspopup="dialog" aria-label="전체 메뉴: 다른 앱으로 이동. 끌어서 자리를 옮길 수 있습니다"
+    title="전체 메뉴 — 끌어서 자리 이동 · Home 키로 제자리">
+    <LayoutGrid size={22} aria-hidden="true" /><span>전체 메뉴</span>
+  </button>;
+}
 export const openMenu = () => dispatch('ls:menu');
 export const openServiceMenu = () => dispatch('ls:services');
 export const openEvents = (slug = '') => dispatch('ls:events', { slug });
@@ -188,7 +299,7 @@ export default function NavigationHub({ app = 'class', sections = [], onAction, 
       <footer className="lsne-help"><a href={KAKAO_URL} target="_blank" rel="noopener noreferrer"><MessageCircle size={19} />카카오 문의<ArrowUpRight size={15} /></a></footer>
     </main>
   </FocusLayer>;
-  return <>{createPortal(<button type="button" className="lsne-desktop-services" data-theme={dark ? 'dark' : 'light'} onClick={() => showModal('services')} aria-haspopup="dialog" aria-label="전체 메뉴: 다른 앱으로 이동" title="전체 메뉴"><LayoutGrid size={22} aria-hidden="true" /><span>전체 메뉴</span></button>, document.body)}{page}{modal && <FocusLayer dark={dark} title={modalTitle} onClose={() => closeModal()}>
+  return <>{createPortal(<DesktopServicesLauncher dark={dark} onOpen={() => showModal('services')} />, document.body)}{page}{modal && <FocusLayer dark={dark} title={modalTitle} onClose={() => closeModal()}>
     <header className="lsne-modal-header"><div><small>{APP_NAMES[app]}</small><h2>{modalTitle}</h2></div><button className="lsne-close" onClick={() => closeModal()} aria-label="메뉴 닫기"><X size={23} /></button></header>
     {modal === 'menu' ? <div className="lsne-menu-groups">
       {localGroups.map(group => <section key={group.id}><h3>{group.title}</h3>{group.items.map(item => <LinkRow key={item.id} item={item} onSelect={select} />)}</section>)}
