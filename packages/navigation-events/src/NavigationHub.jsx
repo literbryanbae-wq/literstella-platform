@@ -176,6 +176,11 @@ export default function NavigationHub({ app = 'class', sections = [], onAction, 
       </> : event ? <article className="lsne-detail">
         <Art event={event} /><small>{eventEnded(event) ? '종료된 이벤트' : event.period}</small><h1>{event.title}</h1><p className="lsne-lead">{event.summary}</p>
         <dl>{event.facts.map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        {event.gifts && <section className="lsne-gifts" aria-labelledby="lsne-gifts-h">
+          <h2 id="lsne-gifts-h"><Gift size={17} aria-hidden="true" />{event.gifts.title}</h2>
+          <ol>{event.gifts.tiers.map(([day, gift, scope]) => <li key={day}><b>{day}</b><strong>{gift}</strong><em>{scope}</em></li>)}</ol>
+          {event.gifts.warn && <p className="lsne-gift-warn">{event.gifts.warn}</p>}
+        </section>}
         <p className="lsne-notice">{event.notice}</p>
         {event.timer ? <button className="lsne-primary" onClick={() => showModal('timer')}><Timer size={19} />{event.cta}</button> : <a className="lsne-primary" href={event.href}>{eventEnded(event) ? '지난 안내 확인' : event.cta}<ArrowUpRight size={18} /></a>}
         <details><summary>신청과 계정 안내</summary><p>이벤트 안내는 로그인 없이 볼 수 있습니다. 실제 신청과 수강권 확인은 연결된 서비스에서 진행합니다. 이미 가입했다면 기존 계정으로 로그인해 주세요.</p></details>

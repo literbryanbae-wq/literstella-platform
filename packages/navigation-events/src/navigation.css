@@ -35,6 +35,15 @@
 .lsne-detail>.lsne-art{aspect-ratio:3/1;margin:18px 0 24px;max-height:300px}.lsne-detail h1{font-size:30px;line-height:1.35;margin:8px 0 12px;overflow-wrap:anywhere}.lsne-detail>small{color:var(--ne-accent)}.lsne-lead{color:var(--ne-muted)!important;font-size:17px}
 .lsne-detail dl{margin:24px 0}.lsne-detail dl>div{display:grid;grid-template-columns:80px minmax(0,1fr);gap:16px;padding:14px 0;border-bottom:1px solid var(--ne-line)}.lsne-detail dt{font-weight:700}.lsne-detail dd{margin:0;color:var(--ne-muted)}
 .lsne-notice{padding:14px 16px;background:var(--ne-soft);border-left:3px solid var(--ne-accent);font-size:14px}
+.lsne-gifts{margin:24px 0;padding:18px;border:1px solid var(--ne-line);border-radius:10px;background:var(--ne-soft)}
+.lsne-gifts h2{display:flex;align-items:center;gap:7px;margin:0 0 14px;font-size:16px;color:var(--ne-ink)}
+.lsne-gifts ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.lsne-gifts li{display:grid;grid-template-columns:92px minmax(0,1fr);gap:4px 14px;padding:12px;border:1px solid var(--ne-line);border-radius:8px;background:var(--ne-bg)}
+.lsne-gifts b{grid-column:1;grid-row:1/span 2;font-size:14px;font-weight:800;color:var(--ne-accent)}
+.lsne-gifts strong{grid-column:2;grid-row:1;font-size:15px;line-height:1.45;color:var(--ne-ink);overflow-wrap:anywhere}
+.lsne-gifts em{grid-column:2;grid-row:2;font-style:normal;font-size:12.5px;line-height:1.55;color:var(--ne-muted);overflow-wrap:anywhere}
+.lsne-gift-warn{margin:12px 0 0;padding:11px 13px;border-radius:8px;background:var(--ne-bg);border:1px solid var(--ne-line);font-size:13px;line-height:1.6;color:var(--ne-ink);overflow-wrap:anywhere}
+@media(max-width:560px){.lsne-gifts{padding:14px}.lsne-gifts li{grid-template-columns:minmax(0,1fr)}.lsne-gifts b{grid-column:1;grid-row:1}.lsne-gifts strong{grid-column:1;grid-row:2}.lsne-gifts em{grid-column:1;grid-row:3}}
 .lsne-primary{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:50px;padding:12px 18px;margin:20px 0;border:0;border-radius:6px;background:var(--ne-accent);color:var(--ne-button)!important;text-decoration:none;font-weight:700!important;text-align:center}
 .lsne-detail details{border-block:1px solid var(--ne-line);margin-top:24px}.lsne-detail summary{padding:16px 0;cursor:pointer;font-weight:700}.lsne-detail details p{font-size:14px;color:var(--ne-muted)}
 .lsne-help{display:flex;justify-content:center;margin-top:32px;border:0;background:none;padding:0}.lsne-help a{display:inline-flex;align-items:center;gap:8px;color:var(--ne-ink);text-decoration:none;min-height:48px}

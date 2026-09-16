@@ -4,6 +4,11 @@ export const APP_HOME = { read: '/', class: '/classes', challenge: '/', diary: '
 export const EVENTS = Object.freeze([
   { id: 'last100', title: '라스트 야나완 100일', summary: '올해의 마지막 완독 도전', art: 'hogwarts-h4-reading-stage', focal: 'right', end: '2026-09-23', period: '마지막 시작일 2026. 9. 23.', cta: '도전 일정·참여 안내', href: 'https://challenge.literstella.co.kr/#challenge-plan',
     facts: [['대상', '원서 읽기를 꾸준히 이어가고 싶은 분'], ['일정', '시작일과 쉬는 날에 따라 도전 일정이 달라집니다.'], ['참여', '기존 챌린지 안내에서 목표와 참여 조건을 확인하세요.']],
+    gifts: { title: '성공할수록 커지는 선물', tiers: [
+      ['30일 성공', '소장 원서 강의 1권 평생소장 수강권 선물', '올인원 소장 여부와 무관 · 가족·친구·동료의 별도 계정으로 전달'],
+      ['66일 성공', '소장 원서 강의 2권 평생소장 수강권 선물', '올인원 소장 여부와 무관 · 본인 수강권은 그대로 유지'],
+      ['100일 성공', '올인원 평생소장 계정 1개 추가 선물', '올인원 8종(클래식 강독 7 + 핵심 이론 1) 전체 소장 확인 회원 전용'],
+    ], warn: '0~7개 소장 회원은 100일에 성공해도 무료 올인원 계정 지급 대상이 아닙니다.' },
     notice: '도전 연장과 소장 수강권 선물에는 각각 조건이 있습니다. 참여 화면의 안내를 확인해 주세요.' },
   { id: 'together', title: '평생소장 프로필·수강권 선물', summary: '함께 읽을 사람에게 전하는 선물', art: 'classic-c4-saved-next', focal: 'right', end: '2026-09-23', period: '신청 기간·접수 상태는 신청 화면에서 확인', cta: '내 자격·선물 안내 확인', href: 'https://class-new.literstella.co.kr/together',
     facts: [['대상', '올인원 평생소장 컬렉션 8종 연결이 확인된 회원'], ['혜택', '함께 읽을 사람의 독립 계정과 수강 혜택'], ['조건', '설문·의견 참여 동의 등 신청 화면의 조건을 확인하세요.']],
