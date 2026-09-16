@@ -135,10 +135,22 @@ async function accountDelete(req, env, cors) {
   // 3) Auth 계정 삭제 — 재로그인 불가(탈퇴의 실질). 실패해도 위 익명화는 이미 끝났다.
   const authDel = await sb(`/auth/v1/admin/users/${user.id}`, { method: "DELETE" }).catch(() => null);
 
+  // 4) 탈퇴 후 30일 재가입 차단 등록 (운영자 승인 2026-09-16) — 소셜 로그인은 '로그인=가입'이라
+  //    탈퇴 확인차 다시 누르는 순간 계정이 되살아난다. DB 에는 이메일 해시만 남고 30일 뒤 자동 삭제.
+  //    (auth.users BEFORE INSERT 트리거 + Before User Created 훅이 이 표를 본다.)
+  let blockRegistered = false;
+  if (email && authDel && authDel.ok) {
+    const bl = await sb(`/rest/v1/rpc/signup_block_add`, {
+      method: "POST", body: JSON.stringify({ p_email: email, p_days: 30, p_reason: "withdraw_self" }),
+    }).catch(() => null);
+    blockRegistered = !!(bl && bl.ok);
+  }
+
   return json({
     ok: true,
     anonymized: rows.length || 0,
     authDeleted: !!(authDel && authDel.ok),
+    signupBlocked: blockRegistered,
   }, 200, cors);
 }
 
