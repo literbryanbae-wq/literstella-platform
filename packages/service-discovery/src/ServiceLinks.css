@@ -1,0 +1,11 @@
+.ls-network-surface { width: min(1280px, 100%); margin: 32px auto; padding: 0 20px; box-sizing: border-box; }
+.ls-network-surface *, .ls-network-links *, .ls-network-notice * { box-sizing: border-box; letter-spacing: 0; }
+.ls-network-links { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 22px 0; border-block: 1px solid #d7dde1; text-align: left; }
+.ls-network-links a, .ls-network-notice a { display: inline-flex; align-items: center; gap: 8px; min-height: 48px; color: inherit; text-decoration: none; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.ls-network-links a span { font-size: 10px; padding: 3px 5px; border-radius: 3px; background: #f4ce6a; color: #202018; }
+.ls-network-links svg, .ls-network-notice svg { flex-shrink: 0; }
+.ls-network-notice { display: flex; align-items: center; gap: 16px; padding: 18px 0; border-bottom: 1px solid #d7dde1; color: inherit; }
+.ls-network-notice div { flex: 1; min-width: 0; }
+.ls-network-notice strong { font-size: 16px; }
+.ls-network-notice p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; }
+@media (max-width: 540px) { .ls-network-notice { flex-wrap: wrap; } .ls-network-notice a { margin-left: 38px; } .ls-network-links { flex-direction: column; gap: 4px; } }

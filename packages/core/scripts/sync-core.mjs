@@ -22,6 +22,7 @@ const SUBDIRS = ['data', 'tokens', 'glue'];
 const APPS = {
   diagnosis: join(DEV_ROOT, '01-reading-diagnosis', 'literstella-reading-diagnosis', 'src', 'core'),
   challenge: join(DEV_ROOT, '02-challenge', 'literstella-challenge', 'src', 'core'),
+  class: join(DEV_ROOT, '07-class', 'src', 'core'),
 };
 
 const HEADER = (rel) =>
@@ -61,7 +62,7 @@ async function syncApp(appKey, dryRun) {
 }
 
 const dryRun = process.argv.includes('--dry-run');
-const only = process.argv.find(a => a === 'diagnosis' || a === 'challenge');
+const only = process.argv.find(a => a === 'diagnosis' || a === 'challenge' || a === 'class');
 const targets = only ? [only] : Object.keys(APPS);
 
 let total = 0;

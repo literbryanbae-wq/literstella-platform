@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const source = readFileSync(new URL('./src/NavigationHub.jsx', import.meta.url), 'utf8');
+const css = readFileSync(new URL('./src/navigation.css', import.meta.url), 'utf8');
+assert.match(source, /createPortal\(<button[^\n]+className="lsne-desktop-services"[^\n]+showModal\('services'\)/);
+assert.match(source, /<LayoutGrid size=\{22\} aria-hidden="true"/);
+assert.match(source, /modal === 'services' \? <ServiceMenuCards/);
+assert.match(css, /\.lsne-desktop-services\{display:none\}/);
+assert.match(css, /@media\(min-width:900px\)\{\.lsne-desktop-services\{/);
+assert.match(css, /\.lsne-desktop-services:focus-visible/);
+assert.doesNotMatch(source, /!modal && createPortal\(<button/);
+console.log('PASS desktop launcher: shared service view, SVG icon, 900px boundary, persistent focus target');
