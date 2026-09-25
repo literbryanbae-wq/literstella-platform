@@ -395,7 +395,8 @@ function publicQuote(quote, balance) {
 //   ⚠️ 완독 '수치'는 건드리지 않는다 — 완독 권수는 사실이고, 초대권은 자격만 준다.
 //   그래야 화면이 "2권 완독"을 정직하게 보여주면서 스텔라 기능은 열 수 있다.
 function applyInvite(completion, invite) {
-  if (!invite?.activated) return completion;
+  // 🔴 activated(한 번 켰다)가 아니라 active(아직 유효)를 본다 — 만료(2027-02-28) 뒤에도 열리지 않게(2026-09-25).
+  if (!invite?.active) return completion;
   return { ...completion, known: true, inviteStella: true };
 }
 
@@ -419,14 +420,50 @@ async function buildContext(env, sbFetch, authUser, book) {
   };
 }
 
-async function buildMemberProgress(env, sbFetch, authUser) {
+// 올인원 8/8 = 라일라 소울로 가는 두 번째 문(운영자 결정 2026-09-25 — 새 등급 없음, 2,000P 문턱 그대로).
+//   정의는 class-gate ownsAllInOne 하나다(출간본 게이트 — 함께 읽기 자리 제외·이론 자동·연간권 포함).
+//   여기서 다시 계산하지 않고 서비스 바인딩으로 묻는다 — 두 곳이 갈리면 "출간본은 받는데 라일라는 소울이 아니다"가 된다.
+//   실패·지연은 '모름'이다 — 소울로 올리지 않는다(올리는 쪽 fail-open 금지). 진단 워커(/api/rm-chat)도 같은 곳에 묻는다.
+const LYRA_MODE_RANK = Object.freeze({ helper: 0, mate: 1, tutor: 2, soul: 3, stella: 4 });
+const ALL_IN_ONE_TIMEOUT_MS = 2500;
+
+async function fetchAllInOne(env, userToken) {
+  const svc = env?.CLASS_GATE;
+  if (!svc || typeof svc.fetch !== 'function' || !userToken) return { known: false, why: 'no_binding' };
+  let timer = null;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ known: false, why: 'timeout' }), ALL_IN_ONE_TIMEOUT_MS);
+  });
+  const ask = (async () => {
+    try {
+      const response = await svc.fetch(new Request('https://literstella-class-gate/premium-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${userToken}` },
+        body: '{}',
+      }));
+      const data = await readJson(response, null);
+      if (!response.ok || !data || typeof data.eligible !== 'boolean') {
+        return { known: false, why: `http_${response.status}` };
+      }
+      return { known: true, owns: data.eligible === true };
+    } catch {
+      return { known: false, why: 'error' };
+    }
+  })();
+  const result = await Promise.race([ask, late]);
+  clearTimeout(timer);
+  return result;
+}
+
+async function buildMemberProgress(env, sbFetch, authUser, userToken = '') {
   const pointUser = await resolvePointUser(env, sbFetch, authUser);
   if (!pointUser) return { error: 'profile_missing' };
-  const [points, ownership, completion, invite] = await Promise.all([
+  const [points, ownership, completion, invite, allInOne] = await Promise.all([
     fetchPointProgress(env, sbFetch, pointUser.id),
     fetchOwnership(env, sbFetch, authUser.email),
     fetchClassicCompletion(env, sbFetch, pointUser.id, authUser.email),
     fetchStellaInvite(env, sbFetch, pointUser.id).catch(() => ({ activated: false })),
+    fetchAllInOne(env, userToken),
   ]);
   const resolvedCompletion = applyInvite(
     completionWithOwnershipKnowledge(completion, ownership), invite,
@@ -439,13 +476,20 @@ async function buildMemberProgress(env, sbFetch, authUser) {
   // 초대권으로 열린 경우: 모드는 스텔라로 올리되 완독 수치는 사실 그대로 둔다.
   //   화면이 "N권 완독"과 "스텔라 이용 중"을 동시에 정직하게 보여줄 수 있다.
   const inviteStella = !!resolvedCompletion.inviteStella;
-  return {
+  const out = {
     ...points,
     ...progress,
     ...(inviteStella && !progress.stellaUnlocked
       ? { effectiveMode: 'stella', stellaUnlocked: true, viaInvite: true, inviteExpiresAt: invite?.expiresAt || null }
       : {}),
   };
+  // 소울 두 번째 문 — 스텔라가 아니고 포인트 등급이 소울 미만일 때만 모드를 올린다.
+  //   포인트·완독 수치는 사실 그대로 둔다(초대권과 같은 원칙). viaAllInOne = 화면이 '올인원으로 열림'을 구분하게.
+  //   진화 축하 연출은 띄우지 않는다 — 친해져서 변한 게 아니다(라일라 담당 메모 2026-09-25).
+  if (allInOne.known && allInOne.owns && (LYRA_MODE_RANK[out.effectiveMode] ?? 0) < LYRA_MODE_RANK.soul) {
+    return { ...out, effectiveMode: 'soul', viaAllInOne: true, nextThreshold: null, pointsToNext: 0 };
+  }
+  return out;
 }
 
 async function quoteRequest(env, sbFetch, authUser, body) {
@@ -610,7 +654,7 @@ export async function contentPointRoute(req, env, cors, sub, {
 
   try {
     if (sub === 'progress') {
-      const progress = await buildMemberProgress(env, sbFetch, authUser);
+      const progress = await buildMemberProgress(env, sbFetch, authUser, req.headers.get('X-User-Token') || '');
       if (progress.error) {
         return json({ ok: false, error: progress.error }, 409, cors);
       }

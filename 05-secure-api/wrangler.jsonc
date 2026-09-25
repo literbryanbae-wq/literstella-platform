@@ -29,7 +29,10 @@
       "binding": "AUTH_EMAIL_SERVICE",
       "service": "literstella-reading-diagnosis",
       "entrypoint": "AuthEmailService"
-    }
+    },
+    // 올인원 8/8 판정 정본(출간본 게이트 ownsAllInOne) — 라일라 소울 두 번째 문(2026-09-25).
+    //   /api/points/content/progress 가 /premium-status 에 회원 토큰으로 묻는다. 새로 정의하지 않는다.
+    { "binding": "CLASS_GATE", "service": "literstella-class-gate" }
   ],
 
   // ⚠️ 미배포 스캐폴딩. 포트원 승인 후 배포. 모든 위험 기능은 아래 플래그(기본 false) 뒤에 있음.
