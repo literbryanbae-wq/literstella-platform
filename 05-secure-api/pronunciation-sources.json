@@ -1,0 +1,27 @@
+{
+  "apiCommit": "9afcd4246276f7f29f0bd1e2976d70d63e644eb5",
+  "englishCommit": "3232148f58032043c1a1f2b504b62f7c52d59fd5",
+  "files": [
+    {
+      "path": "src/pronunciation/pronunciationStore.mjs",
+      "sha256": "1bf710e8cf72be0c51085cc1fefde09cd36eb13fb17d7423f98b4ffdab021b25",
+      "source": "operator-controlled-v2 store"
+    },
+    {
+      "path": "src/pronunciation/english/learning-platform/server/etriPronunciationProvider.mjs",
+      "sha256": "8c1c6ab1bc1ab16d4d57f0978a32ebcb330b798bedff4e2019b7af0fd902acc7"
+    },
+    {
+      "path": "src/pronunciation/english/learning-platform/server/pronunciationService.mjs",
+      "sha256": "8e8e6ad78baa64d29b67a85e04329a86fed149914b902137b6382203cd8ae459"
+    },
+    {
+      "path": "src/pronunciation/english/src/lib/pronunciationAssessment.mjs",
+      "sha256": "f0505d3e2f5578a8018251d7a3f56a46ae55f28f0e4402ef0cef9efcc89539db"
+    },
+    {
+      "path": "src/pronunciation/english/src/lib/pronunciationContract.mjs",
+      "sha256": "8994c99d4e07d961fffd9084330fd8da2d8528ffe2bffb9695ff00405e1109cd"
+    }
+  ]
+}

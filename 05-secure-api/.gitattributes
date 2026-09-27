@@ -1,0 +1,3 @@
+src/pronunciation/** text eol=lf
+src/pronunciation-route.mjs text eol=lf
+pronunciation-sources.json text eol=lf

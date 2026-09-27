@@ -13,6 +13,7 @@ import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
 import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs";
 import { classEmailRecoveryRoute, RECOVERY_KIND } from "./class-email-recovery.mjs";
 import { growthPanelRoute } from "./growth-panel-service.mjs";
+import { pronunciationRoute } from "./pronunciation-route.mjs";
 import {
   classBookRequestSatisfied,
   classEnrollmentEmailCandidates,
@@ -172,6 +173,7 @@ async function requireUser(req, env) {
       metadata: u.user_metadata && typeof u.user_metadata === "object" ? u.user_metadata : {},
       providers: provs,
       emailConfirmed: !!u.email_confirmed_at,
+      isAnonymous: u.is_anonymous === true,
     } : null;
   } catch { return null; }
 }
@@ -3093,6 +3095,9 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(req.url);
     const path = url.pathname;
+    if (path.startsWith('/api/english/pronunciation/')) {
+      return pronunciationRoute(req, env, { requireUser, sbFetch });
+    }
     if (path === '/api/class/email-recovery/send' || path === '/api/class/email-recovery/submit') {
       return classEmailRecoveryRoute(req, env, cors, {
         json, requireUser, sbFetch, hmacHex, timingSafeEq, sha256Hex,
