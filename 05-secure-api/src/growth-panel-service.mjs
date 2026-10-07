@@ -1,10 +1,24 @@
 // Dedicated quality-panel intake. No gift-account, payment, mail or entitlement writes.
 // Authentication and service-role transport are injected from the existing Worker.
-// Owner decision 2026-09-05: existing SSO + all EIGHT explicitly owned courses.
-// No seven-course mode, derived theory, temporary pass or administrator exception.
+// Accept the legacy and one-reading-course contracts during coordinated rollout.
+// Ownership remains server-derived; application does not grant premium access.
 export const GROWTH_PANEL_CAMPAIGN_ID = 'growth-quality-panel-v1';
 export const GROWTH_PANEL_REQUIRED_BOOKS = Object.freeze(['kidari', 'anne', 'littlewomen1', 'littlewomen2', 'pride', 'gatsby', 'sherlock', 'theory']);
 export const GROWTH_PANEL_OWNERSHIP_POLICY = 'classic7-plus-theory-explicit';
+export const GROWTH_PANEL_READING_BOOKS = Object.freeze(GROWTH_PANEL_REQUIRED_BOOKS.filter(book => book !== 'theory'));
+export const GROWTH_PANEL_ONE_OWNED_POLICY = 'classic-one-explicit';
+
+export function validGrowthPanelOwnershipContract(campaign) {
+  const books = campaign?.requiredBooks;
+  const legacy = campaign?.ownershipPolicy === GROWTH_PANEL_OWNERSHIP_POLICY;
+  const oneOwned = campaign?.ownershipPolicy === GROWTH_PANEL_ONE_OWNED_POLICY;
+  const expected = legacy ? GROWTH_PANEL_REQUIRED_BOOKS : GROWTH_PANEL_READING_BOOKS;
+  return (legacy || oneOwned) && Array.isArray(books)
+    && books.length === expected.length && new Set(books).size === expected.length
+    && expected.every(book => books.includes(book))
+    && (legacy ? campaign.minimumOwnedBooks === undefined || campaign.minimumOwnedBooks === 8
+      : campaign.minimumOwnedBooks === 1);
+}
 export const GROWTH_PANEL_INTERESTS = Object.freeze(['daily', 'travel', 'business', 'classics', 'hobby', 'university', 'career']);
 export const GROWTH_PANEL_SKILLS = Object.freeze(['reading', 'listening', 'writing', 'speaking']);
 export const GROWTH_PANEL_DEVICES = Object.freeze(['mobile', 'tablet', 'desktop', 'multiple']);
@@ -100,15 +114,11 @@ function validResult(result, action) {
   if (action === 'submit') return validReceipt(result.application) && typeof result.existing === 'boolean';
   if (action === 'get') return true;
   const campaign = result.campaign;
-  const exactEight = Array.isArray(campaign?.requiredBooks) && campaign.requiredBooks.length === 8
-    && new Set(campaign.requiredBooks).size === 8
-    && GROWTH_PANEL_REQUIRED_BOOKS.every(book => campaign.requiredBooks.includes(book))
-    && campaign.ownershipPolicy === GROWTH_PANEL_OWNERSHIP_POLICY;
   return isObject(campaign) && campaign.id === GROWTH_PANEL_CAMPAIGN_ID
     && typeof campaign.open === 'boolean' && campaign.selectionCapacity === 100
     && isObject(result.member) && typeof result.member.email === 'string'
     && [true, false, null].includes(result.member.eligible)
-    && (!campaign.open || (exactEight && ['privacyVersion', 'feedbackVersion', 'retentionVersion', 'privacyNotice', 'feedbackNotice', 'retentionNotice']
+    && (!campaign.open || (validGrowthPanelOwnershipContract(campaign) && ['privacyVersion', 'feedbackVersion', 'retentionVersion', 'privacyNotice', 'feedbackNotice', 'retentionNotice']
       .every(key => typeof campaign[key] === 'string' && campaign[key].trim())));
 }
 
