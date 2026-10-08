@@ -1,7 +1,7 @@
-// Dedicated quality-panel intake. No gift-account, payment, mail or entitlement writes.
+// Quality-panel intake; the database atomically admits a fixed English-premium cohort.
 // Authentication and service-role transport are injected from the existing Worker.
 // Accept the legacy and one-reading-course contracts during coordinated rollout.
-// Ownership remains server-derived; application does not grant premium access.
+// Paid/owned access remains CLASS_GATE-owned, independently of panel grants.
 export const GROWTH_PANEL_CAMPAIGN_ID = 'growth-quality-panel-v1';
 export const GROWTH_PANEL_REQUIRED_BOOKS = Object.freeze(['kidari', 'anne', 'littlewomen1', 'littlewomen2', 'pride', 'gatsby', 'sherlock', 'theory']);
 export const GROWTH_PANEL_OWNERSHIP_POLICY = 'classic7-plus-theory-explicit';
@@ -27,7 +27,7 @@ const VERSION = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/;
 const ERROR_STATUS = Object.freeze({
   unauthorized: 401, email_unverified: 403, invalid_body: 400, invalid_fields: 400,
   email_mismatch: 400, consent_required: 400, policy_changed: 409,
-  campaign_closed: 409, ineligible: 403, application_not_found: 404,
+  campaign_closed: 409, campaign_full: 409, panel_withdrawn: 409, ineligible: 403, application_not_found: 404,
   upstream_timeout: 504, service_unavailable: 503, invalid_response: 502,
   method_not_allowed: 405, not_found: 404, payload_too_large: 413,
 });
@@ -97,6 +97,7 @@ async function deadline(operation, ms, controller) {
 
 function validReceipt(value) {
   return isObject(value) && UUID.test(value.id || '')
+    && (value.premiumActive === undefined || typeof value.premiumActive === 'boolean')
     && ['submitted', 'pending', 'selected', 'not_selected', 'withdrawn'].includes(value.status)
     && Number.isFinite(Date.parse(value.createdAt))
     && (value.withdrawnAt === null || Number.isFinite(Date.parse(value.withdrawnAt)))
@@ -118,8 +119,30 @@ function validResult(result, action) {
     && typeof campaign.open === 'boolean' && campaign.selectionCapacity === 100
     && isObject(result.member) && typeof result.member.email === 'string'
     && [true, false, null].includes(result.member.eligible)
+    && (result.member.panelPremium === undefined || typeof result.member.panelPremium === 'boolean')
     && (!campaign.open || (validGrowthPanelOwnershipContract(campaign) && ['privacyVersion', 'feedbackVersion', 'retentionVersion', 'privacyNotice', 'feedbackNotice', 'retentionNotice']
       .every(key => typeof campaign[key] === 'string' && campaign[key].trim())));
+}
+
+export async function englishPremiumStatus(req, env, result, timeoutMs = 2500) {
+  const policy = 'english-premium-v1';
+  if (result?.member?.panelPremium === true) return { policy, eligible: true, source: 'panel' };
+  const unknown = { policy, eligible: null, source: null };
+  const token = req.headers.get('X-User-Token');
+  if (!token || typeof env.CLASS_GATE?.fetch !== 'function') return unknown;
+  const controller = new AbortController();
+  try {
+    return await deadline(async () => {
+      const response = await env.CLASS_GATE.fetch(new Request('https://literstella-class-gate/premium-status', {
+        method: 'POST', redirect: 'manual', signal: controller.signal,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}',
+      }));
+      if (!response.ok) { void response.body?.cancel().catch(() => {}); return unknown; }
+      const data = await boundedJson(response, 16384, 'invalid_response', controller.signal);
+      return typeof data?.eligible === 'boolean'
+        ? { policy, eligible: data.eligible, source: data.eligible ? 'ownership' : null } : unknown;
+    }, timeoutMs, controller);
+  } catch { return unknown; }
 }
 
 export async function growthPanelRoute(req, env, cors, sub, deps) {
@@ -175,7 +198,9 @@ export async function growthPanelRoute(req, env, cors, sub, deps) {
       const body = await readBody(1024);
       if (!isObject(body) || body.confirm !== 'WITHDRAW') throw fail('invalid_fields');
     }
-    return reply(await rpc(action));
+    const result = await rpc(action);
+    if (action === 'status') result.premium = await englishPremiumStatus(req, env, result);
+    return reply(result);
   } catch (error) {
     const code = Object.hasOwn(ERROR_STATUS, error?.code) ? error.code : 'service_unavailable';
     // Never return or log upstream bodies, auth tokens, email, free text or secrets.
