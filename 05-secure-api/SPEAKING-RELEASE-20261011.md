@@ -17,6 +17,14 @@ Do not describe this code/policy deployment as an opened or provider-tested serv
 No ETRI policy changes in this follow-up. Both repositories use isolated branches;
 the API main branch still needs these speech commits before its next deployment.
 
+### Unlimited trial deployed and checked
+
+- API source `9d0ffdf`, Worker version `d5c13881-0b5e-4b21-8aa4-157d5e56e66d`.
+- Frontend source `db793d6`, Worker version `29e4c878-581a-4788-9568-440fce2316ce`; 84/84 public asset SHA-256 hashes match.
+- Logged-in production browser shows unlimited trial heading and touch help; 320/390/1440px document widths do not overflow. The actual service remains visibly unavailable, matching OFF policy.
+- Screenshot: `D:/literstella-work/speaking-ux-audit-20261011/unlimited-live-mobile.png`.
+- No real audio was submitted in this follow-up. Activation gates are key-rotation confirmation and precise trial expiry; the superseded daily-cap gate no longer applies.
+
 Baseline: platform origin/main 3e4a87a (live API 5b293842-43db-4931-9c81-4e377f308668).
 
 ## Scope
