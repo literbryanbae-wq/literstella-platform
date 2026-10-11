@@ -23,4 +23,9 @@ Await user confirmation: whole-service daily cap, precise trial end, and whether
 - Post-migration checks: anon/authenticated cannot execute new RPC; service role can. Retention cron active. Security advisor's two RLS-without-policy INFO items are intentional deny-browser private tables, not unrestricted access. Existing unrelated advisor findings left untouched.
 - Relevant advisory: https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy
 
-Deployment version and actual account/quota verification must be recorded after release; do not equate these mocked tests with real provider results.
+## Deployed
+
+- API source 8732f5e + migration 320468e. Worker d69133eb-2b87-4ca0-8848-f3b102ea1cb9. Existing bindings/vars kept.
+- Frontend initial release 16088c4, Worker 44039b9e-ea5a-46e9-b947-c61bd9dacc93; 84/84 public asset hashes match. Additional waveform correction follows this release.
+- Logged-in production account: single-sentence status shows 10/10 remaining. Long material selects separate valid sentences. Guest status returns 401 for both services.
+- Speaking policy remains off and request count is 0. Actual transmission/charge NOT tested yet; activation gates above remain unresolved. Do not represent fixture tests or file loading as a provider analysis.

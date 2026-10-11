@@ -29,6 +29,8 @@ test('disabled and nonpremium routes cannot submit audio or consume quota',async
   const member=fixture({member:false});assert.equal((await member.run('assess',{})).status,403);assert.equal(member.calls.length,1);
 });
 test('deployed ETRI adapter rejects paragraphs and over-20-second byte payload before provider',()=>{
-  assert.throws(()=>validateEtriInput({script:'First sentence. Second sentence.',audio:'A'.repeat(100),durationMs:1000}));
-  assert.throws(()=>validateEtriInput({script:'Hello.',audio:Buffer.alloc(640002).toString('base64'),durationMs:1000}));
+  const pcm={format:'pcm_s16le',sampleRate:16000,channels:1,audio:Buffer.alloc(32000).toString('base64')};
+  assert.equal(validateEtriInput({script:'Hello.',pcm}).durationMs,1000);
+  assert.throws(()=>validateEtriInput({script:'First sentence. Second sentence.',pcm}),/assessment_script_too_long/);
+  assert.throws(()=>validateEtriInput({script:'Hello.',pcm:{...pcm,audio:Buffer.alloc(640002).toString('base64'),durationMs:1000}}),/assessment_audio_duration/);
 });
