@@ -1,5 +1,29 @@
 # Speech UX release — 2026-10-11
 
+## Current activation — 2026-10-11
+
+The operator confirmed the existing key was not exposed and authorized activation.
+Earlier statements below about a disclosed key were an unsupported agent assumption,
+not a verified security incident; key rotation is not an activation prerequisite.
+The operator approved automatic expiry at `2026-10-22T00:00:00+09:00`.
+
+Existing credentials are installed only as Worker secrets (no plaintext copy,
+source value, browser value or signature recorded). Source `21571f7` enables the
+existing speaking route. Worker `92181d79-1d8d-4330-8f5f-8d5ebd7f80cb` is deployed.
+DB singleton policy is ON with the approved expiry, unlimited request count and
+five concurrent leases. No auth, membership, RLS or raw-audio retention changes.
+Nine SQL/route tests and Worker dry-run pass. Live signed-in status is ready.
+The operator-provided 27-second Korean-prompt recording completed a real
+`asr.eval` request through the production member UI: overall 78, pronunciation
+83, fluency 52, rhythm 80. Text recognition was uncertain, so meaning judgment
+was explicitly withheld. The result dashboard and a single completed/saved DB
+record match. No recognized text, audio or reference script fields were stored.
+Guest status still returns 401. No actual `para.eval` or new ETRI call was tested
+in this activation run. Screenshot: `D:/literstella-work/speaking-ux-audit-20261011/activation-live-result.png`.
+
+Earlier OFF status in the historical release sections describes the earlier
+deployment only and is superseded by this section.
+
 ## Superseding policy — unlimited trial (operator approved 2026-10-11)
 
 The member 2/day rule and proposed service 100/day rule below are superseded.
@@ -12,7 +36,7 @@ Raw recording/transcript retention is still forbidden; records remain 30 days.
 Nine synthetic SQL/route tests pass, including one member completing 105 requests,
 five pending leases, sixth busy, completion releasing a lease, and storage privacy.
 These are not 105 actual supplier calls. Existing membership/auth regressions pass.
-Activation remains OFF; expiry is unset and key-rotation confirmation is pending.
+At this earlier policy-only deployment activation remained OFF; expiry was unset.
 Do not describe this code/policy deployment as an opened or provider-tested service.
 No ETRI policy changes in this follow-up. Both repositories use isolated branches;
 the API main branch still needs these speech commits before its next deployment.
@@ -23,7 +47,7 @@ the API main branch still needs these speech commits before its next deployment.
 - Frontend source `db793d6`, Worker version `29e4c878-581a-4788-9568-440fce2316ce`; 84/84 public asset SHA-256 hashes match.
 - Logged-in production browser shows unlimited trial heading and touch help; 320/390/1440px document widths do not overflow. The actual service remains visibly unavailable, matching OFF policy.
 - Screenshot: `D:/literstella-work/speaking-ux-audit-20261011/unlimited-live-mobile.png`.
-- No real audio was submitted in this follow-up. Activation gates are key-rotation confirmation and precise trial expiry; the superseded daily-cap gate no longer applies.
+- No real audio was submitted in that policy-only follow-up. Current activation is described above; the superseded daily-cap gate no longer applies.
 
 Baseline: platform origin/main 3e4a87a (live API 5b293842-43db-4931-9c81-4e377f308668).
 
@@ -37,7 +61,7 @@ Baseline: platform origin/main 3e4a87a (live API 5b293842-43db-4931-9c81-4e377f3
 
 ## Activation gates
 
-Await user confirmation: whole-service daily cap, precise trial end, and whether the locally provided SpeechSuper key has been rotated since its earlier disclosure. Never publish credentials. Keep SPEAKING_ENABLED off until all confirmed.
+Historical gate list is superseded by current activation above. There was no verified key exposure. Never publish credential values. Unlimited utilization and the trial expiry are now operator-approved.
 
 ## Verification
 
