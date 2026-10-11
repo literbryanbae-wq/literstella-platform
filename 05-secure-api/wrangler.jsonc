@@ -37,6 +37,7 @@
 
   // ⚠️ 미배포 스캐폴딩. 포트원 승인 후 배포. 모든 위험 기능은 아래 플래그(기본 false) 뒤에 있음.
   "vars": {
+    "SPEAKING_ENABLED": "true", // 2026-10-11 operator activation; DB trial expiry and five-concurrent guard remain authoritative.
     "ADMIN_API_ENABLED": "true",    // #8b 관리자 service_role 라우트 — ON(총괄 2026-08-14, 운영자 지시로 강의 알림 메일 발송 경로 개방)
     //   🔴 이 라우트는 전부 **관리자 이메일 OTP**(/api/admin/auth) 뒤에 있다 — 플래그만으로는 아무도 발송 못 한다.
     "CONTENT_SEND_ENABLED": "true", // 콘텐츠 알림 실발송(mode:"send") 허용 — dry/test 는 이 값과 무관
@@ -57,6 +58,7 @@
   },
 
   // 배포 시 secret으로 주입 (wrangler secret put <NAME>):
+  //   SPEECHSUPER_APP_KEY / SPEECHSUPER_SECRET_KEY — 스피킹 분석 전용. 브라우저/저장소에 값 공개 금지.
   //   SUPABASE_SERVICE_ROLE_KEY  — service_role (브라우저 노출 금지)
   //   OTP_SECRET                 — diag Worker와 동일 값(회원가입·관리자 OTP 토큰 서명/검증 공유) ★회원가입 필수
   //   ADMIN_SECRET               — 관리자 세션 토큰 서명용
