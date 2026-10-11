@@ -1,4 +1,4 @@
-export const SPEAKING_TRIAL_POLICY=Object.freeze({memberDailyLimit:2,resultRetentionDays:30,minSeconds:5,maxSeconds:60,privacyVersion:'speaking-scores-only-20261009'});
+export const SPEAKING_TRIAL_POLICY=Object.freeze({usageMode:'unlimited-trial',memberDailyLimit:null,serviceDailyLimit:null,resultRetentionDays:30,minSeconds:5,maxSeconds:60,privacyVersion:'speaking-scores-only-20261009'});
 export const SPEAKING_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Only numeric observations and the explicit accent configuration survive storage.
 export function speakingStoredResult(result){

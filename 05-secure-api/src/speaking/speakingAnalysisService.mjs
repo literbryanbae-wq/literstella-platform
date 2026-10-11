@@ -1,9 +1,8 @@
-// Integration boundary, not mounted. Existing API owns auth and premium grants.
-// No process-memory quota fallback. Store must atomically claim daily and concurrent budgets.
+// Existing API owns auth and premium grants. Unlimited trial requests are
+// measured in the store; atomic leases still enforce concurrency and idempotency.
 import {SPEAKING_ID,SPEAKING_TRIAL_POLICY as POLICY,speakingStoredResult} from './speakingAnalysisContract.mjs';
-import {trialRemainingMaximum} from './speakingTrialAllowance.mjs';
 const fail=code=>{throw new Error(code);};
-const errors={speaking_signin_required:401,speaking_membership_required:403,speaking_origin_rejected:403,speaking_not_ready:503,speaking_input_invalid:400,speaking_consent_required:400,speaking_limit:429,speaking_pending:409,speaking_conflict:409,speaking_uncertain:409,speaking_not_found:404,speaking_failed:502};
+const errors={speaking_signin_required:401,speaking_membership_required:403,speaking_origin_rejected:403,speaking_not_ready:503,speaking_input_invalid:400,speaking_consent_required:400,speaking_busy:429,speaking_pending:409,speaking_conflict:409,speaking_uncertain:409,speaking_not_found:404,speaking_failed:502};
 async function boundedJson(request,max=2700000){
   const reader=request.body?.getReader();if(!reader)fail('speaking_input_invalid');let size=0;const parts=[];
   let stopped=false;
@@ -53,22 +52,20 @@ export function createSpeakingAnalysisService({enabled=false,requireUser,checkMe
       const membership=await checkMembership(user,env,{request});
       if(membership?.eligible!==true||membership.policy!=='english-premium-v1')fail('speaking_membership_required');
       const policy=await store.policy();
-      // All public rollout settings must exist; never infer unlimited trial usage.
-      if(policy?.enabled!==true||policy.privacyVersion!==POLICY.privacyVersion||policy.memberDailyLimit!==POLICY.memberDailyLimit||policy.resultRetentionDays!==30||!Number.isInteger(policy.serviceDailyLimit)||policy.serviceDailyLimit<1||!Number.isInteger(policy.maxConcurrent)||policy.maxConcurrent<1||policy.maxConcurrent>5||!Number.isFinite(Date.parse(policy.expiresAt))||now().getTime()>=Date.parse(policy.expiresAt))fail('speaking_not_ready');
+      // Operator-approved unlimited trial must be explicit on both sides.
+      if(policy?.enabled!==true||policy.usageMode!==POLICY.usageMode||policy.privacyVersion!==POLICY.privacyVersion||policy.memberDailyLimit!==null||policy.serviceDailyLimit!==null||policy.resultRetentionDays!==30||!Number.isInteger(policy.maxConcurrent)||policy.maxConcurrent<1||policy.maxConcurrent>5||!Number.isFinite(Date.parse(policy.expiresAt))||now().getTime()>=Date.parse(policy.expiresAt))fail('speaking_not_ready');
       const day=new Date(now().getTime()+9*3600000).toISOString().slice(0,10);
       if(action==='status'){
         const status=await store.status({authUid:user.id,day});
-        if(!Number.isInteger(status?.remaining)||status.remaining<0||status.remaining>POLICY.memberDailyLimit)fail('speaking_failed');
-        const checkedAt=now().toISOString(),maximum=trialRemainingMaximum({remaining:status.remaining,expiresAt:policy.expiresAt,now:checkedAt});
-        if(maximum===null)fail('speaking_not_ready');
-        return reply({ok:true,ready:true,...POLICY,expiresAt:policy.expiresAt,checkedAt,remaining:status.remaining,trialRemainingMaximum:maximum});
+        if(status?.usageMode!==POLICY.usageMode||!Number.isSafeInteger(status.usedToday)||status.usedToday<0)fail('speaking_failed');
+        return reply({ok:true,ready:true,...POLICY,expiresAt:policy.expiresAt,checkedAt:now().toISOString(),usedToday:status.usedToday});
       }
       if(!/^application\/json(?:;|$)/i.test(request.headers.get('Content-Type')||''))fail('speaking_input_invalid');
       const body=await boundedJson(request),input=validateSpeakingInput(body),id=body.requestId;
       const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([input.mode,input.script,input.audio]))),inputHash=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
       const claim=await store.claim({authUid:user.id,requestId:id,inputHash,day,consentVersion:POLICY.privacyVersion});
       if(claim?.authUid!==user.id)fail('speaking_failed');
-      if(['daily_limit','service_limit','busy'].includes(claim.state))fail('speaking_limit');
+      if(claim.state==='busy')fail('speaking_busy');
       if(claim.state==='conflict')fail('speaking_conflict');
       if(claim.state==='uncertain')fail('speaking_uncertain');
       if(claim.state!=='reserved'||!SPEAKING_ID.test(claim.leaseId||''))fail('speaking_pending');

@@ -1,5 +1,22 @@
 # Speech UX release — 2026-10-11
 
+## Superseding policy — unlimited trial (operator approved 2026-10-11)
+
+The member 2/day rule and proposed service 100/day rule below are superseded.
+`usageMode=unlimited-trial`, memberDailyLimit/serviceDailyLimit=null. New migration
+`20261011051629_speaking_unlimited_trial.sql` is applied; concurrent leases remain
+limited to five, with idempotency, expiry and authorization unchanged. Existing
+requests are measured for utilization, not charged against a daily allowance.
+Raw recording/transcript retention is still forbidden; records remain 30 days.
+
+Nine synthetic SQL/route tests pass, including one member completing 105 requests,
+five pending leases, sixth busy, completion releasing a lease, and storage privacy.
+These are not 105 actual supplier calls. Existing membership/auth regressions pass.
+Activation remains OFF; expiry is unset and key-rotation confirmation is pending.
+Do not describe this code/policy deployment as an opened or provider-tested service.
+No ETRI policy changes in this follow-up. Both repositories use isolated branches;
+the API main branch still needs these speech commits before its next deployment.
+
 Baseline: platform origin/main 3e4a87a (live API 5b293842-43db-4931-9c81-4e377f308668).
 
 ## Scope

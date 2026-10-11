@@ -13,15 +13,15 @@ function fixture({member=true,enabled=true}={}){
       const value=JSON.parse(init.body);calls.push({path,value});assert.equal(value.p_auth_uid,user.id);
       if(path==='rpc/growth_panel_request')return Response.json({ok:true,member:{panelPremium:member}});
       assert.equal(path,'rpc/speaking_trial_v1');
-      if(value.p_action==='policy')return Response.json({enabled:true,expiresAt:new Date(Date.now()+7*86400000).toISOString(),memberDailyLimit:2,resultRetentionDays:30,serviceDailyLimit:100,maxConcurrent:5,privacyVersion:'speaking-scores-only-20261009'});
-      if(value.p_action==='status')return Response.json({remaining:2});
+      if(value.p_action==='policy')return Response.json({enabled:true,usageMode:'unlimited-trial',expiresAt:new Date(Date.now()+7*86400000).toISOString(),memberDailyLimit:null,resultRetentionDays:30,serviceDailyLimit:null,maxConcurrent:5,privacyVersion:'speaking-scores-only-20261009'});
+      if(value.p_action==='status')return Response.json({usageMode:'unlimited-trial',usedToday:102});
       throw Error('Unexpected mutation');
     }});
     return {status:response.status,value:await response.json()};
   }};
 }
 test('real route reuses verified account and existing panel membership, status never claims',async()=>{
-  const f=fixture(),reply=await f.run();assert.equal(reply.status,200);assert.equal(reply.value.ready,true);assert.equal(reply.value.remaining,2);
+  const f=fixture(),reply=await f.run();assert.equal(reply.status,200);assert.equal(reply.value.ready,true);assert.equal(reply.value.usedToday,102);assert.equal(reply.value.memberDailyLimit,null);
   assert.deepEqual(f.calls.map(x=>x.value.p_action),['status','policy','status']);
 });
 test('disabled and nonpremium routes cannot submit audio or consume quota',async()=>{
