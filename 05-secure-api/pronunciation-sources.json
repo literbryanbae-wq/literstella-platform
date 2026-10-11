@@ -1,6 +1,7 @@
 {
   "apiCommit": "9afcd4246276f7f29f0bd1e2976d70d63e644eb5",
   "englishCommit": "3232148f58032043c1a1f2b504b62f7c52d59fd5",
+  "revision": "2026-10-11: 20-second/30-word single-sentence policy and read-only member remainder; preceding commit IDs identify original packaging",
   "files": [
     {
       "path": "src/pronunciation/pronunciationStore.mjs",
@@ -9,15 +10,15 @@
     },
     {
       "path": "src/pronunciation/english/learning-platform/server/etriPronunciationProvider.mjs",
-      "sha256": "8c1c6ab1bc1ab16d4d57f0978a32ebcb330b798bedff4e2019b7af0fd902acc7"
+      "sha256": "d956442ba1ad86e0af6d86edf5791fa09bc0df89fe2115e7469582f9c31c4f68"
     },
     {
       "path": "src/pronunciation/english/learning-platform/server/pronunciationService.mjs",
-      "sha256": "8e8e6ad78baa64d29b67a85e04329a86fed149914b902137b6382203cd8ae459"
+      "sha256": "c54e87ba25b5ae983955f586da04cd4a452faa6336d2bc7783b3cd64ef3f7c8e"
     },
     {
       "path": "src/pronunciation/english/src/lib/pronunciationAssessment.mjs",
-      "sha256": "f0505d3e2f5578a8018251d7a3f56a46ae55f28f0e4402ef0cef9efcc89539db"
+      "sha256": "b2442cb5fb64d76644e20ae8c637c48adb7e8726465517733be2efed065ae1da"
     },
     {
       "path": "src/pronunciation/english/src/lib/pronunciationContract.mjs",

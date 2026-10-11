@@ -3,14 +3,15 @@
 // 10/member/day + <=1000/provider/day reservations and the fixed 100-member pilot.
 // HTTPS remains the default. The separately approved, operator-controlled pilot
 // may use the exact HTTP endpoint; its service must require plaintext consent.
-import { normalizePronunciationResponse } from '../../src/lib/pronunciationAssessment.mjs';
+import { normalizePronunciationResponse, pronunciationScriptIsShort } from '../../src/lib/pronunciationAssessment.mjs';
 import { PRONUNCIATION_RUNTIME, validPronunciationActivation } from '../../src/lib/pronunciationContract.mjs';
 
 export function validateEtriInput({ script, pcm } = {}) {
   if (typeof script !== 'string' || !script.trim() || script.length > 500 || !/[a-z]/i.test(script) || /[\u0000-\u001f]/.test(script)) throw new Error('assessment_script_invalid');
   if (pcm?.format !== 'pcm_s16le' || pcm?.sampleRate !== 16000 || pcm?.channels !== 1 || typeof pcm.audio !== 'string' || pcm.audio.length > 2560000 || pcm.audio.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(pcm.audio)) throw new Error('assessment_audio_invalid');
+  if (!pronunciationScriptIsShort(script)) throw new Error('assessment_script_too_long');
   const bytes = pcm.audio.length / 4 * 3 - (pcm.audio.endsWith('==') ? 2 : pcm.audio.endsWith('=') ? 1 : 0);
-  if (bytes < 32000 || bytes > 1920000 || bytes % 2 !== 0) throw new Error('assessment_audio_duration');
+  if (bytes < 32000 || bytes > 640000 || bytes % 2 !== 0) throw new Error('assessment_audio_duration');
   // Never trust browser duration metadata for provider limits.
   return { script: script.trim(), audio: pcm.audio, durationMs: bytes / 32 };
 }

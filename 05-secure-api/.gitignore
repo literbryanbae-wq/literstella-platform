@@ -1,6 +1,7 @@
 node_modules/
 .wrangler/
 .dryrun/
+.wrangler-dryrun/
 *.log
 
 # 🔴 자격증명은 절대 커밋되지 않게 (2026-08-28).

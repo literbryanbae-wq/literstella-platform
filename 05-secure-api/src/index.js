@@ -14,6 +14,7 @@ import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs
 import { classEmailRecoveryRoute, RECOVERY_KIND } from "./class-email-recovery.mjs";
 import { growthPanelRoute } from "./growth-panel-service.mjs";
 import { pronunciationRoute } from "./pronunciation-route.mjs";
+import { speakingRoute } from "./speaking-route.mjs";
 import {
   classBookRequestSatisfied,
   classEnrollmentEmailCandidates,
@@ -3097,6 +3098,9 @@ export default {
     const path = url.pathname;
     if (path.startsWith('/api/english/pronunciation/')) {
       return pronunciationRoute(req, env, { requireUser, sbFetch });
+    }
+    if (path.startsWith('/api/english/speaking/')) {
+      return speakingRoute(req, env, { requireUser, sbFetch });
     }
     if (path === '/api/class/email-recovery/send' || path === '/api/class/email-recovery/submit') {
       return classEmailRecoveryRoute(req, env, cors, {

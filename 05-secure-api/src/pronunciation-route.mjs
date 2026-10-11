@@ -51,7 +51,15 @@ export function pronunciationRoute(req, env, { requireUser, sbFetch }) {
     pilotExpiresAt: null,
   });
   return createPronunciationService({
-    requireUser, store, provider,
+    requireUser, store: {...store, remaining: async ({authUid}) => {
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+      try {
+        const response=await sbFetch(env,'rpc/pronunciation_remaining_v1',{method:'POST',signal:controller.signal,body:JSON.stringify({p_auth_uid:authUid})});
+        const value=await boundedJson(response,controller.signal);
+        if(!response.ok||!Number.isInteger(value.remaining)||value.remaining<0||value.remaining>10)throw new Error('assessment_unavailable');
+        return {remaining:value.remaining};
+      } finally {clearTimeout(timer);}
+    }}, provider,
     enabled: env.PRONUNCIATION_ENABLED === 'true',
     operatorControlled: env.PRONUNCIATION_OPERATOR_CONTROLLED === 'true',
     rollout: 'member-http-pilot', privacyVersion: PRONUNCIATION_HTTP_CONSENT,

@@ -9,7 +9,7 @@ const STATUS = Object.freeze({ assessment_signin_required: 401, assessment_membe
   assessment_pilot_required: 403, assessment_pilot_limit: 503,
   assessment_origin_rejected: 403, assessment_not_ready: 503, assessment_invalid_body: 400,
   assessment_consent_required: 400, assessment_audio_invalid: 400, assessment_audio_duration: 400,
-  assessment_script_invalid: 400, assessment_request_conflict: 409, assessment_pending: 409,
+  assessment_script_invalid: 400, assessment_script_too_long: 400, assessment_request_conflict: 409, assessment_pending: 409,
   assessment_uncertain: 409, assessment_daily_limit: 429, assessment_service_limit: 429,
   assessment_not_found: 404, assessment_provider_failed: 502, assessment_unavailable: 503 });
 const fail = code => { throw new Error(code); };
@@ -122,12 +122,13 @@ export function createPronunciationService({ requireUser, checkMembership, store
           || pilot.enrolledCount > PRONUNCIATION_PILOT.participantLimit
           || (pilot.state !== 'enrolled' && pilot.enrolledCount >= PRONUNCIATION_PILOT.participantLimit)) return fail('assessment_pilot_limit');
         if (action === 'status') return reply({ ok: true, ready: true, privacyVersion,
+          ...(typeof store.remaining==='function' ? await store.remaining({authUid:user.id}) : {}),
           transport: memberPilot ? 'http-test' : 'https', audience: memberPilot ? 'members' : 'all-in-one',
           ...(memberPilot ? { runtime: PRONUNCIATION_RUNTIME, activatedAt: policy.activatedAt,
             expiresAt: null, resultRetentionDays: PRONUNCIATION_RETENTION_DAYS } : {}),
           memberDailyLimit: PRONUNCIATION_PILOT.memberDailyLimit,
           pilot: { id: PRONUNCIATION_PILOT.id, participantLimit: PRONUNCIATION_PILOT.participantLimit },
-          maxRecordingSeconds: 60, scoreScale: { min: 1, max: 5 } });
+          maxRecordingSeconds: 20, scoreScale: { min: 1, max: 5 } });
         if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get('Content-Type') || '')) return fail('assessment_invalid_body');
         const body = await deadline(signal => boundedBody(req, 2605000, signal), req.signal);
         if (!body || Array.isArray(body) || Object.keys(body).some(key => !['requestId', 'script', 'pcm', 'consent', 'consentVersion', 'plaintextConsent'].includes(key)) || !validUid(body.requestId)) return fail('assessment_invalid_body');

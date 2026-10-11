@@ -1,6 +1,14 @@
 // ETRI API 98 exposes one sentence score (1..5), not phoneme/prosody/fluency sub-scores.
 import { PRONUNCIATION_PILOT } from './pronunciationContract.mjs';
 export const PRONUNCIATION_SCALE = Object.freeze({ min: 1, max: 5 });
+export const PRONUNCIATION_INPUT_LIMITS = Object.freeze({maxSeconds:20,autoStopSeconds:19,maxWords:30});
+export function pronunciationScriptIsShort(script) {
+  if(typeof script!=='string'||!script.trim())return false;
+  const text=script.trim();
+  const words=text.match(/[A-Za-z]+(?:['’][A-Za-z]+)*/g)||[];
+  const segments=text.split(/[.!?]+["'’”)]*\s+(?=[A-Za-z])/).filter(value=>value.trim());
+  return words.length>0&&words.length<=30&&segments.length===1;
+}
 export const PRONUNCIATION_SAMPLE = Object.freeze({
   sample: true, score: 3.6, recognized: "I'd like to check in, please.",
   script: "I'd like to check in, please.",
