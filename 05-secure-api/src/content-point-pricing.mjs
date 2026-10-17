@@ -51,6 +51,10 @@ const STELLA_SHOWCASE_BOOKS = new Set(['oz', 'wedonotpart']);
 // 소장(=올인원 동급)일 때 열린다. 완독·포인트는 라일라 등급만 바꾼다(물질 혜택 없음).
 // isStella(완독 7종)는 이제 가격에 영향이 없는 정보 필드다.
 const SHOWCASE_OWNED_MIN = 7;
+// 강의와 스토리를 따로 결제하는 책(운영자 2026-10-16·17 — 어린 왕자). 강 번호와 편 번호가 어긋나서
+// (1장 = 1~4강) 'AI 강의 N 을 사면 스토리 N 도 열림' 묶음이 엉뚱한 편을 연다. 이 책은 강의를 사면
+// 강의 키만 열리고, 스토리를 먼저 샀어도 강의 차액 할인이 없다. 라이브 f696bc38(2026-10-17)과 같은 규칙.
+const LECTURE_ONLY_BOOKS = new Set(['littleprince']);
 
 const BOOK_ALIASES = Object.freeze({
   'happy-prince': 'happyprince',
@@ -97,6 +101,7 @@ export function entitlementKeysFor(surface, book, episodeNo) {
     return [`story:${normalizedBook}:${no}`];
   }
   if (surface === CONTENT_SURFACE.AI_LECTURE) {
+    if (LECTURE_ONLY_BOOKS.has(normalizedBook)) return [`lecture:${normalizedBook}:${no}`];
     return [
       `lecture:${normalizedBook}:${no}`,
       `story:${normalizedBook}:${no}`,
@@ -147,7 +152,7 @@ export function quoteContentItem({
     return { ...common, access: 'unsupported', reason: 'invalid_or_unpriced' };
   }
 
-  if (surface === CONTENT_SURFACE.STORY && (hasStoryAccess || hasAiLectureAccess)) {
+  if (surface === CONTENT_SURFACE.STORY && (hasStoryAccess || (hasAiLectureAccess && !LECTURE_ONLY_BOOKS.has(normalizedBook)))) {
     return { ...common, access: 'owned', reason: 'existing_entitlement', permanent: true };
   }
   if (surface === CONTENT_SURFACE.AI_LECTURE && hasAiLectureAccess) {
@@ -176,17 +181,18 @@ export function quoteContentItem({
     };
   }
 
-  const basePoints =
-    surface === CONTENT_SURFACE.AI_LECTURE && hasStoryAccess
-      ? listedBase - POINT_BASE_PRICE[CONTENT_SURFACE.STORY]
-      : listedBase;
+  const storyUpgrade =
+    surface === CONTENT_SURFACE.AI_LECTURE && hasStoryAccess && !LECTURE_ONLY_BOOKS.has(normalizedBook);
+  const basePoints = storyUpgrade
+    ? listedBase - POINT_BASE_PRICE[CONTENT_SURFACE.STORY]
+    : listedBase;
   const rawPoints = (basePoints * (100 - level.discountPct)) / 100;
   const payablePoints = memberFavorRound(rawPoints);
 
   return {
     ...common,
     access: 'points',
-    reason: hasStoryAccess ? 'story_to_ai_upgrade' : 'point_unlock',
+    reason: storyUpgrade ? 'story_to_ai_upgrade' : 'point_unlock',
     permanent: true,
     listedBasePoints: listedBase,
     basePoints,
@@ -213,7 +219,7 @@ export function quoteRemainingBundle({
   }
 
   for (const item of uniqueItems.values()) {
-    if (item.surface !== CONTENT_SURFACE.AI_LECTURE) continue;
+    if (item.surface !== CONTENT_SURFACE.AI_LECTURE || LECTURE_ONLY_BOOKS.has(item.book)) continue;
     uniqueItems.delete(`${CONTENT_SURFACE.STORY}:${item.book}:${item.episodeNo || ''}`);
   }
 

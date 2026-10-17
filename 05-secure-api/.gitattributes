@@ -1,3 +1,5 @@
 src/pronunciation/** text eol=lf
 src/pronunciation-route.mjs text eol=lf
 pronunciation-sources.json text eol=lf
+# 라이브에 그대로 올라가는 결제 모듈(묶지 않음) — 라이브 바이트가 LF 다(2026-10-17, ops/build-live.mjs).
+src/class-*.mjs text eol=lf

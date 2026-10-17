@@ -126,6 +126,7 @@ function validResult(result, action) {
 
 export async function englishPremiumStatus(req, env, result, timeoutMs = 2500) {
   const policy = 'english-premium-v1';
+  if (result?.member?.firstCoursePremium === true) return { policy, eligible: true, source: 'ownership', entitlement: 'first-course-beta' };
   if (result?.member?.panelPremium === true) return { policy, eligible: true, source: 'panel' };
   const unknown = { policy, eligible: null, source: null };
   const token = req.headers.get('X-User-Token');

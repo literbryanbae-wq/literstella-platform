@@ -1,7 +1,18 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "literstella-api",
-  "main": "src/index.js",
+  // 🔴 라이브와 같은 모양으로 배포한다(2026-10-17 정리 — LIVE-SOURCE.md).
+  //   라이브 진입은 src/index.js 가 아니라 class-checkout-email-entry.mjs 다(결제 감싸기 사슬:
+  //   class-checkout-email-entry → class-member-checkout-entry → class-payment-probe-entry → index.js).
+  //   진입을 index.js 로 두면 /api/class-checkout/*·결제 메일 재시도가 통째로 빠진다(2026-10-17 사고, 90분).
+  //   build 명령(ops/build-live.mjs)이 src/index.js 를 index.js 한 파일로 묶고 결제 모듈 8개를 그대로 옆에 둔
+  //   dist/live/ 를 만들고, 그 폴더를 묶지 않고 그대로 올린다 → 모듈 9개·이름·바이트가 라이브와 같다.
+  "main": "dist/live/class-checkout-email-entry.mjs",
+  "build": { "command": "node ops/build-live.mjs" },
+  "no_bundle": true,
+  "base_dir": "dist/live",
+  "find_additional_modules": true,
+  "rules": [{ "type": "ESModule", "globs": ["*.mjs", "index.js"] }],
   "compatibility_date": "2026-06-17",
   "compatibility_flags": ["nodejs_compat"],
 
@@ -35,7 +46,9 @@
     { "binding": "CLASS_GATE", "service": "literstella-class-gate" }
   ],
 
-  // ⚠️ 미배포 스캐폴딩. 포트원 승인 후 배포. 모든 위험 기능은 아래 플래그(기본 false) 뒤에 있음.
+  // 라이브 plain 변수 15개와 이름·값이 같다(2026-10-17 settings 실측). 여기 없는 변수는 배포 때 지워진다 —
+  //   새 변수는 여기에 먼저 적는다(대시보드에서만 바꾸면 다음 배포가 되돌린다).
+  //   포트원 PORTONE_STORE_ID·PORTONE_BILLING_CHANNEL_KEY 는 2026-10-12 운영에서 지웠다(폐기 인계) — 되살리지 말 것.
   "vars": {
     "SPEAKING_ENABLED": "true", // 2026-10-11 operator activation; DB trial expiry and five-concurrent guard remain authoritative.
     "ADMIN_API_ENABLED": "true",    // #8b 관리자 service_role 라우트 — ON(총괄 2026-08-14, 운영자 지시로 강의 알림 메일 발송 경로 개방)
@@ -49,28 +62,34 @@
     // (미설정 시 코드 폴백 onboarding@resend.dev = 본인 메일만). local-part는 원하면 변경 가능.
     "RESEND_FROM": "리터스텔라 <noreply@literstella.co.kr>",
     "RESEND_STELLA_OPTIN_SEGMENT_ID": "c0cfb2fe-eaf9-47b7-9cf2-c5122192da1a",
-    // 포트원 공개값(비밀 아님 — 프론트에도 노출되는 값)
-    "PORTONE_STORE_ID": "store-464ff242-c317-4693-96c2-1052658e14b7",
-    "PORTONE_BILLING_CHANNEL_KEY": "channel-key-3917d309-e69b-44b6-a0d5-2c7e3b727165",
+    // 발음 평가(2026-09-28 운영자 승인 운영 — PRONUNCIATION-RELEASE-20260928.md). 값은 라이브 그대로.
+    "PRONUNCIATION_ENABLED": "true",
+    "PRONUNCIATION_OPERATOR_CONTROLLED": "true",
+    "PRONUNCIATION_PILOT_ACTIVATED_AT": "2026-09-27T21:57:10Z",
+    "ETRI_HTTP_PILOT_APPROVED": "true",
+    "ETRI_SERVICE_USE_APPROVED": "true",
     // CORS 허용 Origin (쉼표구분) — 프론트 도메인만. 클래스 앱(강독 이관, 2026-07-18) 추가:
     //   class-new=스테이징 · class=컷오버 후 · pages.dev=배포 프리뷰 QA
     "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev,https://english.literstella.co.kr"
   },
 
-  // 배포 시 secret으로 주입 (wrangler secret put <NAME>):
-  //   SPEECHSUPER_APP_KEY / SPEECHSUPER_SECRET_KEY — 스피킹 분석 전용. 브라우저/저장소에 값 공개 금지.
+  // secret 10개(라이브 2026-10-17 실측 — 값은 저장소 밖, `wrangler secret put <NAME>`). 배포는 반드시 --keep-vars:
   //   SUPABASE_SERVICE_ROLE_KEY  — service_role (브라우저 노출 금지)
   //   OTP_SECRET                 — diag Worker와 동일 값(회원가입·관리자 OTP 토큰 서명/검증 공유) ★회원가입 필수
   //   ADMIN_SECRET               — 관리자 세션 토큰 서명용
-  //   PORTONE_API_SECRET         — 포트원 V2 서버 API Secret
-  //   PORTONE_WEBHOOK_SECRET     — 포트원 웹훅 서명 검증
   //   RESEND_API_KEY             — 대량 캠페인/마케팅 전용. 인증 키를 이 Worker에 복사하지 말 것.
+  //   RESEND_WEBHOOK_SECRET      — Resend 웹훅 서명 검증
+  //   TOSS_SECRET_KEY            — 토스 다이렉트 결제(챌린지)
+  //   TOSS_CLASS_SECRET_KEY      — 클래스 결제 위젯 MID lclassljzq(회원·강좌 결제·100원 시험)
+  //   SPEECHSUPER_APP_KEY / SPEECHSUPER_SECRET_KEY — 스피킹 분석 전용. 브라우저/저장소에 값 공개 금지.
+  //   ETRI_API_KEY               — 발음 평가
+  //   (PORTONE_API_SECRET·PORTONE_WEBHOOK_SECRET 는 2026-10-12 삭제 — 폐기)
   // 인증 메일 필수 의존성은 위 AUTH_EMAIL_SERVICE 바인딩이다.
-  //   RESEND_FROM (선택, var/secret) — 발신자. 미설정 시 onboarding@resend.dev(무료=본인메일만). 도메인 인증 후 인증@literstella.co.kr
 
-  // 2026-08-01 회원 안내 1회성 발송. scheduled 핸들러가 연도를 검사하므로 이후 연도에는 no-op.
-  // 발송 완료 후 두 Cron을 제거한다. 자동갱신 Cron은 별도 도입 시 추가.
-  "triggers": { "crons": ["25 18 * * *"] },
+  // 크론 2개 = 라이브와 같다. 하나만 남기면 다른 하나가 지워진다.
+  //   "25 18 * * *" — 매일 03:25 KST 평가단 신청 보관기한 경과분 파기(index.js GROWTH_PANEL_PURGE_CRON)
+  //   "*/5 * * * *" — 클래스 결제 메일 재시도(class-checkout-email-entry.mjs scheduled, 2026-10-12)
+  "triggers": { "crons": ["25 18 * * *", "*/5 * * * *"] },
 
   "observability": { "enabled": true }
 }

@@ -1,0 +1,12 @@
+{
+  // 번들 전용 설정 — 배포에 쓰지 않는다(2026-10-17).
+  //   ops/build-live.mjs 가 이 설정으로 `wrangler deploy --dry-run --outdir dist/bundle` 을 돌려
+  //   src/index.js 와 그 import 를 index.js 한 파일로 묶는다. 라이브 literstella-api 의 index.js 모듈이 이 결과다.
+  //   바인딩·크론·변수는 여기 두지 않는다(묶는 결과에 영향이 없다). 배포 설정은 wrangler.jsonc 한 곳뿐.
+  //   🔴 compatibility_date·flags 는 wrangler.jsonc 와 같아야 한다(nodejs_compat 이 묶는 방식을 바꾼다) —
+  //      ops/build-live.mjs 가 두 파일을 대조하고 다르면 멈춘다.
+  "name": "literstella-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-17",
+  "compatibility_flags": ["nodejs_compat"]
+}
