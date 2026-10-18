@@ -44,15 +44,15 @@ npx wrangler deploy --keep-vars   # 🔴 운영 배포 — 운영자 승인 필�
 - `index.js` 는 wrangler 4.151.1 로 묶은 결과가 라이브와 바이트 같다. 버전을 올리면 `verify-live` 로 차이를 먼저 본다.
 - 코드만 올리는 방식(content API PUT)을 다시 쓸 땐 `Cf-Entrypoint` 를 받을 때·올린 뒤 둘 다 확인한다.
 
-## 공유 트리(`LiterStella-DEV` backup-clean 작업본)에 남은 미배포 작업
+## 공유 트리(`LiterStella-DEV` backup-clean 작업본)에 남아 있던 것 — 2026-10-18 정리
 
-이 브랜치에 넣지 않았다(라이브에 없다). 그 작업을 이어 갈 세션은 이 브랜치 **위로** 옮겨야 한다 — 공유 트리에서 그대로 배포하면
-발음·말하기 라우트·결제 진입·크론·서비스 바인딩이 빠진다.
-
-- `src/index.js` 미커밋(라이브와 869줄 차이 — 포트원 결제·빌링·본인인증 코드 제거 등, 10-12 폐기 인계) · `retired-provider-test.mjs`
-- `src/stella-upgrade-email-service.mjs` 미커밋(계좌이체 안내 — `stella-upgrade-bank-guide-test.mjs`)
-- `src/content-point-service.mjs` 는 공유 트리 쪽이 라이브보다 **뒤처져** 있다(초대권 `active`·올인원 소울 없음)
-- `wrangler.jsonc` 미커밋(크론 0·서비스 바인딩 0 — 그대로 배포하면 운영이 깨진다)
+- **포트원 결제·빌링·본인인증 코드 제거**(10-12 폐기 인계, 미배포)만 진짜 미배포 작업이었다 → 브랜치 **`ops/api-unreleased-20261018`**(main 위)로 옮겼다.
+  배포하면 라이브에서도 빠진다(운영 배포 = 운영자 승인). 그 전까지 main = 라이브.
+- 공유 트리 `src/stella-upgrade-email-service.mjs`·`stella-upgrade-bank-guide-test.mjs` 는 미배포 작업이 아니라 **옛 사본**이었다
+  (main 이 더 새것 — 입금자명은 신청 RPC 가 저장, 닉네임 표시). 옮기지 않았다(10-17 이 문서의 '계좌이체 안내 미배포' 는 오판).
+- 공유 트리 `src/index.js` 의 결제 진입 배선(class-member-checkout·payment-probe 를 index.js 안에 연결)은 라이브의 감싸는 모듈 방식으로 대체돼 옮기지 않았다.
+- 공유 트리 `wrangler.jsonc`(크론 0·서비스 0)·`content-point-service.mjs`(초대권 `active`·올인원 소울 없음)는 옛 사본 — 쓰지 말 것.
+- 공유 트리의 05-secure-api 작업본은 더 이상 정본이 아니다. API 작업은 main(또는 그 위 브랜치)에서 한다.
 
 ## 시험(이 트리에서 2026-10-17)
 

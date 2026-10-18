@@ -14,7 +14,7 @@
 
 ## HTTP 계약
 
-기존 API 호스트의 `/api/growth-panel/` 아래에 배선한다. 모든 경로는 `X-User-Token`을 기존 검증기에 전달하며 응답은 `private, no-store`이다. 다른 캠페인 ID, 사용자 ID, 소장 개수는 브라우저에서 선택/전달받지 않는다.
+기존 API 호스트의 `/api/growth-panel/` 아래에 배선한다. 모든 경로는 `X-User-Token`을 기존 `requireUser`에 전달해 Supabase `/auth/v1/user` 응답의 UID·이메일·확인 상태를 검증한 뒤, 그 서버 검증값만 전용 RPC에 전달한다. 응답은 `private, no-store`이다. 다른 캠페인 ID, 사용자 ID, 소장 개수는 브라우저에서 선택/전달받지 않는다. 운영 `service_role`에는 `auth.users` 직접 SELECT 권한이 없으므로 접수 RPC가 이를 다시 조회하거나 권한을 넓히지 않는다.
 
 | 경로 | 메서드 | 응답 |
 |---|---|---|
@@ -82,7 +82,7 @@ POST 신청 본문:
 ## 공개 전 필수 확인
 
 1. 승인된 최신 Worker 기준에 모듈·라우트만 통합하고 공통 인증/메일/결제 회귀 확인. CORS·기존 binding·vars 보존. 새 키 복사 금지.
-2. 로컬 PostgreSQL 또는 격리된 비운영 DB에서 초안을 실행하여 함수 구문, service_role의 기존 소장 테이블/Auth 읽기 권한, PUBLIC/anon/authenticated 접근 거절, 계정 교차 조회, NULL 입력, 실제 동시 요청을 검증. 현재 로컬 `psql/postgres/docker` 실행 파일이 확인되지 않아 **이 검증은 미완료**이다.
+2. 로컬 PostgreSQL 또는 격리된 비운영 DB에서 초안을 실행하여 함수 구문, service_role의 기존 소장 원장 읽기 권한, PUBLIC/anon/authenticated 접근 거절, 계정 교차 조회, NULL 입력, 실제 동시 요청을 검증. 운영 카탈로그를 읽기 전용으로 확인한 결과 service_role은 `class_verifications`/`class_redemptions` SELECT가 가능하고 `auth.users` SELECT는 불가능했다. 그래서 인증은 기존 `requireUser` 경계에서 끝내고 RPC에 Auth 직접 조회를 두지 않았다. 실제 PostgreSQL에서 초안 전체를 실행하는 검증은 아직 미완료이다.
 3. 8종 전체 실소장 기준은 확정됐다. 실제 모집 기간·정보 수집 목적/항목/보관기한·의견 요청 범위·철회/재신청 규칙은 승인하고 notice/version에 반영한다. 초안 예문을 확정 정책으로 게시하지 않는다.
 4. CLI로 정식 마이그레이션 파일 생성 및 보안 점검 후 승인된 환경에 적용. 이 문서를 SQL 적용 승인으로 사용하지 않는다.
 5. 보관기한 삭제 RPC `growth_panel_purge_expired()` 실행 주기·담당자를 정하고 결과를 확인한다. **정리 함수만 있으며 자동 실행 스케줄은 없다.** 삭제는 각 신청 당시의 `retain_until`을 사용하며 나중 캠페인 설정으로 기존 보관기간을 자동 연장하지 않는다. Auth 탈퇴 시 FK cascade로 해당 신청도 제거하도록 설계했다.
