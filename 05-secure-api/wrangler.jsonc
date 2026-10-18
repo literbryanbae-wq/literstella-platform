@@ -48,13 +48,13 @@
 
   // 라이브 plain 변수 15개와 이름·값이 같다(2026-10-17 settings 실측). 여기 없는 변수는 배포 때 지워진다 —
   //   새 변수는 여기에 먼저 적는다(대시보드에서만 바꾸면 다음 배포가 되돌린다).
-  //   포트원 PORTONE_STORE_ID·PORTONE_BILLING_CHANNEL_KEY 는 2026-10-12 운영에서 지웠다(폐기 인계) — 되살리지 말 것.
+  //   폐기한 옛 결제 공급자의 공개 설정 2개는 2026-10-12 운영에서 지웠다(10-12 폐기 인계 — README.md '2026-10-12 연동 폐기') — 되살리지 말 것.
   "vars": {
     "SPEAKING_ENABLED": "true", // 2026-10-11 operator activation; DB trial expiry and five-concurrent guard remain authoritative.
     "ADMIN_API_ENABLED": "true",    // #8b 관리자 service_role 라우트 — ON(총괄 2026-08-14, 운영자 지시로 강의 알림 메일 발송 경로 개방)
     //   🔴 이 라우트는 전부 **관리자 이메일 OTP**(/api/admin/auth) 뒤에 있다 — 플래그만으로는 아무도 발송 못 한다.
     "CONTENT_SEND_ENABLED": "true", // 콘텐츠 알림 실발송(mode:"send") 허용 — dry/test 는 이 값과 무관
-    "PAYMENT_ENABLED": "true",       // 결제 라우트 ON (2026-07-20 토스 다이렉트 전환 — toss-confirm 활성. 포트원 라우트는 코드상 휴면)
+    "PAYMENT_ENABLED": "true",       // 토스 승인 및 웹훅 라우트(옛 결제 공급자의 결제·빌링·본인인증 라우트는 2026-10-12 폐기로 코드에서 제거)
     "CONTENT_POINTS_ENABLED": "true",  // SQL/RLS/RPC 검증 완료(2026-07-29): 카탈로그 활성 회차만 해금
     "SUPABASE_URL": "https://bvhkvucsoetktoxzupwt.supabase.co",
     "ADMIN_EMAIL": "literbryanbae@gmail.com",
@@ -83,7 +83,7 @@
   //   TOSS_CLASS_SECRET_KEY      — 클래스 결제 위젯 MID lclassljzq(회원·강좌 결제·100원 시험)
   //   SPEECHSUPER_APP_KEY / SPEECHSUPER_SECRET_KEY — 스피킹 분석 전용. 브라우저/저장소에 값 공개 금지.
   //   ETRI_API_KEY               — 발음 평가
-  //   (PORTONE_API_SECRET·PORTONE_WEBHOOK_SECRET 는 2026-10-12 삭제 — 폐기)
+  //   (폐기한 옛 결제 공급자의 secret 2개는 2026-10-12 삭제)
   // 인증 메일 필수 의존성은 위 AUTH_EMAIL_SERVICE 바인딩이다.
 
   // 크론 2개 = 라이브와 같다. 하나만 남기면 다른 하나가 지워진다.

@@ -1,5 +1,7 @@
 # LiterStella 보안 API + 포트원(PortOne) V2 결제 — 통합 설계 (초안)
 
+> **폐기된 설계 / 2026-10-12**: 사용자 요청으로 포트원/KG 연동을 제거했다. 아래 배포·키 설정·구독 도입 순서를 실행하지 말 것. 현재 Worker는 운영 중이며 결제는 Toss 경로를 사용한다. 과거 설계의 배경만 보존한다. 최신 상태는 루트 `.ai-coordination/inbox-claude/portone-kg-retirement-20261012.md` 참조.
+
 > 상태: **초안 / 미배포**. 포트원 가맹 승인(≈2026-07-01) 후 단계별 배포.
 > 라이브 영향 0 — 이 Worker는 아직 어디서도 호출되지 않으며, 모든 기능은 플래그(기본 OFF) 뒤에 있음.
 > 관련 결정/순서: `memory/payment_portone_sequencing.md`

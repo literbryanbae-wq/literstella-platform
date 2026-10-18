@@ -1,5 +1,7 @@
 # PortOne V2 Integration Spec — `literstella-api` (Cloudflare Worker + Browser SDK + Supabase)
 
+> **RETIRED / 2026-10-12**: user requested removal of this integration. Do not restore its SDK, routes, credentials or billing configuration from this historical specification. Current retirement/deployment status: root `.ai-coordination/inbox-claude/portone-kg-retirement-20261012.md`.
+
 > 출처: 세션 31-B 멀티에이전트 리서치(공식문서 11개 에이전트 교차검증, 2026-06-17). DESIGN.md의 ★TODO를 이 문서가 대체한다.
 > **검증 범례:** **[CONFIRMED]** 공식 V2 소스 · **[CORRECTED]** 검증에서 수정 · **[NEEDS-CONSOLE]/[UNVERIFIED]** 문서로 확정 불가 → 콘솔/운영자/설치시점 확인 필요.
 

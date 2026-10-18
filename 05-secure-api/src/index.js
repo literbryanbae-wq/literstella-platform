@@ -1,9 +1,8 @@
 // =============================================================
-// literstella-api — 보안 백엔드 (관리자 service_role + 포트원 결제)
+// literstella-api — 보안 백엔드 (관리자 service_role + 토스 결제)
 // ⚠️ 미배포 스캐폴딩. 모든 위험 기능은 env 플래그(ADMIN_API_ENABLED / PAYMENT_ENABLED, 기본 false) 뒤.
 //    플래그 OFF면 해당 라우트는 404 → 배포해도 라이브 영향 0.
-//    설계: ../DESIGN.md   순서/결정: memory/payment_portone_sequencing.md
-//    ★ 표시는 포트원 V2 공식 문서로 정확 스펙 확인 후 채울 자리(추정 금지).
+//    설계: ../DESIGN.md
 // =============================================================
 
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
@@ -178,17 +177,6 @@ async function requireUser(req, env) {
     } : null;
   } catch { return null; }
 }
-// 빌링키가 이 사용자 소유인지 확인(charge/subscribe 시) — 등록(issue) 시 바인딩한 user_id와 대조.
-async function billingKeyOwnedBy(env, billingKey, userId) {
-  try {
-    const r = await sbFetch(env, `subscriptions?billing_key=eq.${encodeURIComponent(billingKey)}&select=user_id`);
-    if (!r.ok) return false;
-    const rows = await r.json().catch(() => []);
-    const row = Array.isArray(rows) ? rows[0] : null;
-    return !!row && row.user_id === userId;
-  } catch { return false; }
-}
-
 // ── Supabase REST (service_role — 이 Worker 안에서만) ─────
 function sbHeaders(env) {
   return { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, "Content-Type": "application/json" };
@@ -265,11 +253,8 @@ async function adminWrite(req, env, cors, kind) {
   } catch (e) { return json({ ok: false, error: "write_failed", detail: String(e).slice(0, 120) }, 502, cors); }
 }
 
-// ── 포트원 V2 결제 (검증 스펙: ../PORTONE-V2-SPEC.md, 세션 31-B) ──────────
-//    엔드포인트/바디/헤더 모두 공식문서+@portone/server-sdk@0.19.0 .d.ts 대조 완료.
-//    금액은 항상 서버 상수(클라 금액 신뢰 금지). 정기결제 = 카드 빌링키 + cron 재청구(이중청구 방지).
-const PORTONE_API = "https://api.portone.io";          // V2 base [CONFIRMED]
-const YANAWAN_PRICE_KRW = 3000;                         // 서버 가격 상수(빌링키 월구독·레거시)
+// ── 토스 결제 가격표 ──
+const YANAWAN_PRICE_KRW = 3000;
 // 단건 결제 가격표 — 프론트 pricing.js(CHALLENGE_PRICES)와 일치. 금액은 항상 서버가 권위.
 const PRICE_BY_GOAL = { 30: 3000, 66: 5800, 100: 9800 };
 // 클래스 상품 카탈로그(토스 다이렉트) — 서버가 상품명·가격·권한 범위의 단일 권위.
@@ -284,16 +269,9 @@ const PRICE_BY_PRODUCT = {
     orderName: "리터스텔라 클래식 8개 강의 · 12개월 이용권",
   },
 };
-const YANAWAN_ORDER_NAME = "야나완 영어 챌린지 1개월";
-const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
-
-function portoneHeaders(env, extra) {
-  // V2 서버 인증: Authorization: PortOne <API_SECRET> [CONFIRMED]
-  return { Authorization: `PortOne ${env.PORTONE_API_SECRET}`, "Content-Type": "application/json", ...(extra || {}) };
-}
 function newPaymentId() { return `pay${crypto.randomUUID().replace(/-/g, "")}`; } // 영숫자 35자 — 토스 orderId 규칙(6~64·영숫자·-_) 충족
 
-// ── 토스페이먼츠 다이렉트 (2026-07-20 PG 전환: 포트원 제거 — 신규 결제는 이 경로만) ──────────
+// ── 토스페이먼츠 다이렉트 (신규 결제는 이 경로만) ──────────
 //    승인(confirm) = POST /v1/payments/confirm {paymentKey, orderId, amount} · 금액은 서버 가격표 권위.
 //    인증: Basic base64(SECRET_KEY + ':') — 콜론 필수(토스 공식 '가장 흔한 오류').
 //    시크릿: wrangler secret put TOSS_SECRET_KEY (test_sk_… → 실가맹 후 live_sk_…).
@@ -403,34 +381,6 @@ async function tossWebhook(req, env, cors) {
   return json({ ok: true }, 200, cors);
 }
 
-// 결제 단건 조회(reconcile) — 웹훅/응답 금액 신뢰 X, 항상 이걸로 확정
-async function portoneGetPayment(env, paymentId) {
-  const r = await fetch(`${PORTONE_API}/payments/${encodeURIComponent(paymentId)}`, { headers: portoneHeaders(env) });
-  const data = await r.json().catch(() => ({}));
-  return { ok: r.ok, httpStatus: r.status, status: data?.status, amountTotal: data?.amount?.total, data };
-}
-// 빌링키 즉시결제: POST /payments/{id}/billing-key (PaymentAmountInput {total} [CONFIRMED .d.ts])
-async function portoneChargeBillingKey(env, { paymentId, billingKey, customer }) {
-  const body = {
-    billingKey, orderName: YANAWAN_ORDER_NAME,
-    amount: { total: YANAWAN_PRICE_KRW }, currency: "KRW",   // 서버 통화 = "KRW"
-    storeId: env.PORTONE_STORE_ID, channelKey: env.PORTONE_BILLING_CHANNEL_KEY,
-    ...(customer ? { customer } : {}),
-  };
-  const r = await fetch(`${PORTONE_API}/payments/${encodeURIComponent(paymentId)}/billing-key`, {
-    method: "POST", headers: portoneHeaders(env, { "Idempotency-Key": paymentId }), body: JSON.stringify(body),
-  });
-  const data = await r.json().catch(() => ({}));
-  return { ok: r.ok, httpStatus: r.status, data };
-}
-async function portoneCancel(env, { paymentId, reason }) {
-  const r = await fetch(`${PORTONE_API}/payments/${encodeURIComponent(paymentId)}/cancel`, {
-    method: "POST", headers: portoneHeaders(env),
-    body: JSON.stringify({ storeId: env.PORTONE_STORE_ID, reason: reason || "user_cancel" }),
-  });
-  return { ok: r.ok, httpStatus: r.status, data: await r.json().catch(() => ({})) };
-}
-
 // payments(id=paymentId PK) 멱등 upsert. on_conflict=id 필수 — 없으면 requested→PAID 갱신이 409로 실패.
 async function recordPaymentIdempotent(env, p) {
   try {
@@ -438,52 +388,11 @@ async function recordPaymentIdempotent(env, p) {
     return r.ok;
   } catch { return false; }
 }
-async function upsertSubscription(env, s) {
-  try {
-    const r = await sbFetch(env, `subscriptions?on_conflict=billing_key`, { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(s) });
-    return r.ok;
-  } catch { return false; }
-}
-// 1회 청구 + 재조회 확정.
-//  paid         = 재조회로 PAID+금액일치 확정
-//  pendingVerify = 청구 POST는 접수됐는데 재조회 실패(타임아웃 등) → 절대 재청구 금지, 웹훅/재조회로 확정
-async function chargeAndVerify(env, { billingKey, customer, email, userId, source }) {
-  const paymentId = newPaymentId();
-  await recordPaymentIdempotent(env, { id: paymentId, billing_key: billingKey, email: email || null, user_id: userId || null, amount: YANAWAN_PRICE_KRW, status: "requested", source: source || "charge", created_at: new Date().toISOString() });
-  const charge = await portoneChargeBillingKey(env, { paymentId, billingKey, customer });
-  const v = await portoneGetPayment(env, paymentId);           // 본문 신뢰 X → 재조회
-  const paid = v.ok && v.status === "PAID" && v.amountTotal === YANAWAN_PRICE_KRW;
-  // 청구 POST 접수(2xx/paymentId/status 존재)됐는데 재조회가 실패하면 '미확정' — 재청구하면 이중청구
-  const chargeAccepted = charge.ok || !!charge.data?.paymentId || !!charge.data?.status;
-  const pendingVerify = !paid && !v.ok && chargeAccepted;
-  const recordStatus = paid ? "PAID" : pendingVerify ? "pending_verify" : (v.status || (chargeAccepted ? "pending_verify" : "charge_failed"));
-  await recordPaymentIdempotent(env, { id: paymentId, status: recordStatus, amount: v.amountTotal ?? null, raw: charge.data, updated_at: new Date().toISOString() });
-  return { paid, pendingVerify: recordStatus === "pending_verify", paymentId, portoneStatus: v.status, httpStatus: charge.httpStatus };
-}
-
 async function paymentRoute(req, env, cors, sub) {
-  // 웹훅: 포트원이 직접 호출(서명검증). 사용자 인증 없음.
-  if (sub === "webhook") return paymentWebhook(req, env, cors);
   // 토스 웹훅(2026-07-20 PG 전환) — 서명 없음 → 재조회 확정 패턴.
   if (sub === "toss-webhook") return tossWebhook(req, env, cors);
 
   let b; try { b = await req.json(); } catch { b = {}; }
-  const customer = b.customer && typeof b.customer === "object" ? b.customer : undefined;
-  const billingKey = String(b.billingKey || "");
-
-  // 해지/환불 — 운영자(관리자 토큰) 전용.
-  if (sub === "cancel") {
-    const admin = await requireAdmin(req, env);
-    if (!admin) return json({ ok: false, error: "unauthorized" }, 401, cors);
-    let refunded = null;
-    if (b.paymentId) { const c = await portoneCancel(env, { paymentId: String(b.paymentId), reason: b.reason }); refunded = c.ok; }
-    if (billingKey && refunded !== false) {        // 환불 실패 시 상태 불일치 방지 위해 canceled 보류
-      await upsertSubscription(env, { billing_key: billingKey, status: "canceled", updated_at: new Date().toISOString() });
-      await fetch(`${PORTONE_API}/billing-keys/${encodeURIComponent(billingKey)}`, { method: "DELETE", headers: portoneHeaders(env) }).catch(() => {}); // 재청구 불가화
-    }
-    return json({ ok: true, refunded }, 200, cors);
-  }
-
   // 신규 클래스 결제는 결제창을 열기 전에 서버에서 주문을 만든다.
   //   orderId·상품·금액·이메일을 payments에 먼저 묶어 두므로 복귀 승인 시 브라우저 payload를 신뢰하지 않는다.
   if (sub === "toss-prepare") {
@@ -586,86 +495,7 @@ async function paymentRoute(req, env, cors, sub) {
                 : json({ ok: false, error: pay?.code || "not_paid", toss: { status: pay?.status, code: pay?.code } }, 402, cors);
   }
 
-  // 이하 사용자 결제 라우트 = Supabase 토큰 검증 필수. user_id/email은 검증 토큰에서만(클라 입력 신뢰 X).
-  const user = await requireUser(req, env);
-  if (!user) return json({ ok: false, error: "unauthorized" }, 401, cors);
-
-  // 단건 결제 검증 — 프론트 PortOne.requestPayment 후 paymentId 전달. 금액은 서버가 결정(클라 신뢰 X).
-  //   goalDays(30/66/100)별 가격표로 검증. 미지정·미등록이면 30일(3,000원)로 폴백.
-  if (sub === "pay") {
-    const paymentId = String(b.paymentId || "");
-    if (!paymentId) return json({ ok: false, error: "no_payment_id" }, 400, cors);
-    const goalDays = Number(b.goalDays);
-    const expected = PRICE_BY_GOAL[goalDays] || YANAWAN_PRICE_KRW;
-    const pay = await portoneGetPayment(env, paymentId);          // 본문 신뢰 X → 재조회
-    if (!pay.ok) return json({ ok: false, error: "verify_failed" }, 502, cors);
-    const paid = pay.status === "PAID" && pay.amountTotal === expected;
-    await recordPaymentIdempotent(env, { id: paymentId, user_id: user.id, email: user.email, amount: pay.amountTotal ?? null, status: pay.status || "unknown", source: "single", updated_at: new Date().toISOString() });
-    return paid ? json({ ok: true, paymentId }, 200, cors)
-                : json({ ok: false, error: "not_paid", portone: { status: pay.status, amount: pay.amountTotal } }, 402, cors);
-  }
-
-  // 빌링키 발급 결과 저장(= user 바인딩). 프론트 requestIssueBillingKey 직후 호출.
-  if (sub === "billing-key/issue") {
-    if (!billingKey) return json({ ok: false, error: "no_billing_key" }, 400, cors);
-    const vr = await fetch(`${PORTONE_API}/billing-keys/${encodeURIComponent(billingKey)}`, { headers: portoneHeaders(env) });
-    if (!vr.ok) return json({ ok: false, error: "billing_key_invalid", httpStatus: vr.status }, 400, cors);
-    const ex = await sbFetch(env, `subscriptions?billing_key=eq.${encodeURIComponent(billingKey)}&select=user_id`);
-    const exRows = ex.ok ? await ex.json().catch(() => []) : [];
-    if (Array.isArray(exRows) && exRows[0]?.user_id && exRows[0].user_id !== user.id) return json({ ok: false, error: "billing_key_other_user" }, 409, cors);
-    await upsertSubscription(env, { billing_key: billingKey, email: user.email, user_id: user.id, status: "registered", created_at: new Date().toISOString() });
-    return json({ ok: true }, 200, cors);
-  }
-
-  // 단건 청구 / 구독 시작 — 빌링키가 이 사용자 소유여야 함(타인 키 청구 차단).
-  if (sub === "charge" || sub === "subscribe") {
-    if (!billingKey) return json({ ok: false, error: "no_billing_key" }, 400, cors);
-    if (!(await billingKeyOwnedBy(env, billingKey, user.id))) return json({ ok: false, error: "billing_key_not_owned" }, 403, cors);
-    const r = await chargeAndVerify(env, { billingKey, customer, email: user.email, userId: user.id, source: sub });
-    if (r.pendingVerify) return json({ ok: false, pending: true, error: "charge_pending_verify", paymentId: r.paymentId }, 202, cors); // 재시도 금지
-    if (!r.paid) return json({ ok: false, error: "charge_not_paid", portone: { status: r.portoneStatus } }, 402, cors);
-    if (sub === "subscribe") {
-      const next = new Date(Date.now() + MONTH_MS).toISOString();
-      await upsertSubscription(env, { billing_key: billingKey, email: user.email, user_id: user.id, status: "active", next_charge_at: next, last_payment_id: r.paymentId, updated_at: new Date().toISOString() });
-      return json({ ok: true, paymentId: r.paymentId, nextChargeAt: next }, 200, cors);
-    }
-    return json({ ok: true, paymentId: r.paymentId }, 200, cors);
-  }
-
   return json({ ok: false, error: "unknown_payment_route" }, 404, cors);
-}
-
-// 웹훅: Standard Webhooks(Svix) 서명검증 → 포트원 재조회 → 멱등 DB 반영
-async function paymentWebhook(req, env, cors) {
-  const raw = await req.text();                              // 반드시 raw 텍스트로 검증
-  const ok = await verifyPortoneWebhook(env, raw, req.headers.get("webhook-id"), req.headers.get("webhook-timestamp"), req.headers.get("webhook-signature"));
-  if (!ok) return json({ ok: false, error: "bad_signature" }, 400, cors);
-  let evt; try { evt = JSON.parse(raw); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
-  const type = String(evt?.type || "");
-  const paymentId = evt?.data?.paymentId;
-  // 결제(Transaction.*) 이벤트만 처리 — BillingKey.* 등은 paymentId 없음 → 즉시 ack
-  if (!paymentId || !type.startsWith("Transaction.")) return json({ ok: true, note: "ignored" }, 200, cors);
-  const pay = await portoneGetPayment(env, paymentId);       // 웹훅 본문 금액/상태 신뢰 X → 재조회(권위)
-  if (!pay.ok) return json({ ok: false, error: "reverify_failed_retry" }, 500, cors); // 확인 불가 → 포트원 재전송
-  const recorded = await recordPaymentIdempotent(env, { id: String(paymentId), status: pay.status || "unknown", amount: pay.amountTotal ?? null, raw: evt, updated_at: new Date().toISOString() });
-  if (pay.status === "PAID" && pay.amountTotal === YANAWAN_PRICE_KRW) {
-    const okSub = await reconcilePaidSubscription(env, paymentId);
-    if (!recorded || !okSub) return json({ ok: false, error: "persist_failed_retry" }, 500, cors); // 비2xx → 포트원 재시도
-  }
-  return json({ ok: true }, 200, cors);
-}
-// 결제 성공 → 해당 구독 active 유지 + next_charge_at 보정(없으면 +30일). 청구 자체는 cron이 함.
-async function reconcilePaidSubscription(env, paymentId) {
-  try {
-    const r = await sbFetch(env, `subscriptions?last_payment_id=eq.${encodeURIComponent(paymentId)}&select=billing_key,next_charge_at`);
-    if (!r.ok) return false;
-    const rows = await r.json().catch(() => []);
-    const row = Array.isArray(rows) ? rows[0] : null;
-    if (!row?.billing_key) return true;                       // 구독 외 단건이면 ack
-    const next = row.next_charge_at || new Date(Date.now() + MONTH_MS).toISOString();
-    await upsertSubscription(env, { billing_key: row.billing_key, status: "active", next_charge_at: next, updated_at: new Date().toISOString() });
-    return true;
-  } catch { return false; }
 }
 
 // ── Standard Webhooks(Svix) 검증: HMAC-SHA256(base64) over `${id}.${ts}.${raw}` ──
@@ -677,19 +507,6 @@ async function hmacSha256Base64(keyBytes, msg) {
   let bin = ""; for (let i = 0; i < sig.length; i++) bin += String.fromCharCode(sig[i]);
   return btoa(bin);
 }
-async function verifyPortoneWebhook(env, raw, id, ts, sig) {
-  const secret = env.PORTONE_WEBHOOK_SECRET;
-  if (!secret || !id || !ts || !sig) return false;
-  const now = Math.floor(Date.now() / 1000), tsNum = Number(ts);
-  if (!Number.isFinite(tsNum) || Math.abs(now - tsNum) > 300) return false;      // ±5분
-  let keyBytes; try { keyBytes = b64ToBytes(secret.startsWith("whsec_") ? secret.slice(6) : secret); } catch { return false; }
-  let expected; try { expected = await hmacSha256Base64(keyBytes, `${id}.${ts}.${raw}`); } catch { return false; }
-  return String(sig).split(" ").some(part => {
-    const c = part.indexOf(",");
-    return c > 0 && part.slice(0, c) === "v1" && timingSafeEq(part.slice(c + 1), expected);
-  });
-}
-
 // ── 이메일 인증 OTP (회원가입) — Resend 발송 + 무상태 HMAC. 진단 Worker와 OTP_SECRET 공유. ──
 //   토큰 = `${exp}.${hmacHex(OTP_SECRET,"code:email:code:exp")}` (admin/diag 동일 서명식).
 //   플래그 없이 항상 열림. ⚠️ rate-limit은 WAF/KV 백로그(diag_email_otp). 무료티어 발송한도가 1차 방어.
@@ -2044,22 +1861,6 @@ async function classLinkEnrollment(req, env, cors) {
   return finishLink({ ok: true, granted: books });
 }
 
-// ── 본인인증(통합인증) 결과 조회 — identityVerificationId로 PortOne 조회 → verifiedCustomer. ──
-//   PORTONE_API_SECRET 사용. id는 unguessable UUID라 플래그 없이 열되, 운영 시 user 토큰 게이트 권장.
-async function identityVerify(req, env, cors) {
-  let b; try { b = await req.json(); } catch { return json({ ok: false, error: "bad_json" }, 400, cors); }
-  const id = String(b.identityVerificationId || "");
-  if (!id) return json({ ok: false, error: "no_id" }, 400, cors);
-  if (!env.PORTONE_API_SECRET) return json({ ok: false, error: "no_secret" }, 500, cors);
-  const r = await fetch(`${PORTONE_API}/identity-verifications/${encodeURIComponent(id)}`, { headers: portoneHeaders(env) });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) return json({ ok: false, error: "lookup_failed", httpStatus: r.status }, 502, cors);
-  const verified = data?.status === "VERIFIED";
-  const vc = data?.verifiedCustomer || {};
-  // 비-민감 식별정보만 반환(ci/di는 서버 보관용 — 중복가입 검사 등은 서버에서). 클라엔 표시 필드만.
-  return json({ ok: true, verified, customer: verified ? { name: vc.name || null, phoneNumber: vc.phoneNumber || null, gender: vc.gender || null, birthDate: vc.birthDate || null, isForeigner: vc.isForeigner ?? null } : null }, 200, cors);
-}
-
 // ── 원서 등록 신청 → 관리자 메일 알림 (Resend). 플래그 없이 항상 열림. ──
 function escHtml(s) { return String(s || '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c])); }
 async function notifyBookRequest(req, env, cors) {
@@ -3221,12 +3022,6 @@ export default {
       return findByBackupEmail(req, env, cors);
     }
 
-    // 본인인증(통합인증) 결과 조회 — PORTONE_API_SECRET 필요. 플래그 없이 열림(id=unguessable UUID).
-    if (path === "/api/identity/verify") {
-      if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
-      return identityVerify(req, env, cors);
-    }
-
     // 원서 등록 신청 → 관리자 메일 알림 (RESEND_API_KEY·ADMIN_EMAIL 필요).
     if (path === "/api/notify/book-request") {
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
@@ -3310,7 +3105,7 @@ export default {
       return json({ ok: false, error: "not_found" }, 404, cors);
     }
 
-    // 결제 — 플래그 OFF면 404 (단, 웹훅은 포트원이 직접 호출하므로 PAYMENT_ENABLED일 때만 열림)
+    // 결제 — 승인 및 웹훅은 PAYMENT_ENABLED일 때만 열림
     if (path.startsWith("/api/payment/")) {
       if (env.PAYMENT_ENABLED !== "true") return json({ ok: false, error: "disabled" }, 404, cors);
       if (req.method !== "POST") return json({ ok: false, error: "method" }, 405, cors);
@@ -3320,8 +3115,7 @@ export default {
     return json({ ok: false, error: "not_found" }, 404, cors);
   },
 
-  // 자동갱신 Cron (wrangler triggers 활성 후 매일 1회) — next_charge_at 도래 구독 재청구.
-  // 단일 모델(cron만 청구, 포트원 스케줄 미사용)이라 이중청구 없음.
+  // 기존 안내 메일 스케줄만 유지한다. 결제 자동청구는 지원하지 않는다.
   async scheduled(event, env, ctx) {
     const scheduledDate = new Date(event.scheduledTime);
     if (event.cron === MIGRATION_CRON) {
@@ -3332,47 +3126,5 @@ export default {
       await purgeExpiredGrowthPanelApplications(env);
       return;
     }
-    if (env.PAYMENT_ENABLED !== "true") return;
-    const nowIso = new Date().toISOString();
-    const DAY_MS = 24 * 60 * 60 * 1000;
-    const DUNNING_CAP = 4;   // 연속 실패 4회 → 자동 해지(빌링키 폐기). 무한 재청구·PG 패널티 방지.
-    // 1) 청구 대상: active/past_due 중 next_charge_at 도래 → 빌링키 재청구
-    try {
-      const r = await sbFetch(env, `subscriptions?status=in.(active,past_due)&next_charge_at=lte.${encodeURIComponent(nowIso)}&select=billing_key,email,user_id,retry_count`);
-      const due = r.ok ? await r.json().catch(() => []) : [];
-      for (const s of (Array.isArray(due) ? due : [])) {
-        if (!s.billing_key) continue;
-        const res = await chargeAndVerify(env, { billingKey: s.billing_key, email: s.email, userId: s.user_id, source: "cron" });
-        if (res.pendingVerify) {
-          await upsertSubscription(env, { billing_key: s.billing_key, status: "pending_verify", last_payment_id: res.paymentId, updated_at: nowIso }); // 재청구 X, 아래 2)서 확정
-        } else if (res.paid) {
-          await upsertSubscription(env, { billing_key: s.billing_key, status: "active", next_charge_at: new Date(Date.now() + MONTH_MS).toISOString(), retry_count: 0, last_payment_id: res.paymentId, updated_at: nowIso });
-        } else {
-          const tries = (Number(s.retry_count) || 0) + 1;
-          if (tries >= DUNNING_CAP) {     // 던닝 캡 — 무한 재청구 방지, 자동 해지 + 빌링키 폐기
-            await upsertSubscription(env, { billing_key: s.billing_key, status: "canceled", retry_count: tries, last_payment_id: res.paymentId, updated_at: nowIso });
-            await fetch(`${PORTONE_API}/billing-keys/${encodeURIComponent(s.billing_key)}`, { method: "DELETE", headers: portoneHeaders(env) }).catch(() => {});
-          } else {
-            await upsertSubscription(env, { billing_key: s.billing_key, status: "past_due", next_charge_at: new Date(Date.now() + DAY_MS).toISOString(), retry_count: tries, last_payment_id: res.paymentId, updated_at: nowIso }); // 내일 재시도
-          }
-        }
-      }
-    } catch (_e) { /* best-effort */ }
-    // 2) 미확정(pending_verify) 정리: 재청구 없이 last_payment_id 재조회로만 확정
-    try {
-      const r2 = await sbFetch(env, `subscriptions?status=eq.pending_verify&select=billing_key,last_payment_id`);
-      const pend = r2.ok ? await r2.json().catch(() => []) : [];
-      for (const s of (Array.isArray(pend) ? pend : [])) {
-        if (!s.last_payment_id) continue;
-        const v = await portoneGetPayment(env, s.last_payment_id);
-        if (!v.ok) continue;                                  // 다음 실행에서 재시도
-        if (v.status === "PAID" && v.amountTotal === YANAWAN_PRICE_KRW) {
-          await recordPaymentIdempotent(env, { id: s.last_payment_id, status: "PAID", amount: v.amountTotal, updated_at: nowIso });
-          await upsertSubscription(env, { billing_key: s.billing_key, status: "active", next_charge_at: new Date(Date.now() + MONTH_MS).toISOString(), updated_at: nowIso });
-        } else if (v.status === "FAILED" || v.status === "CANCELLED") {
-          await upsertSubscription(env, { billing_key: s.billing_key, status: "past_due", next_charge_at: nowIso, updated_at: nowIso }); // 즉시 재청구 대상
-        }
-      }
-    } catch (_e) { /* best-effort */ }
   },
 };
