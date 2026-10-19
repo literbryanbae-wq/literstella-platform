@@ -11,6 +11,7 @@ import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
 import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs";
 import { classEmailRecoveryRoute, RECOVERY_KIND } from "./class-email-recovery.mjs";
+import { classMemberTierAdminRoute } from "./class-member-tier-admin.mjs";
 import { growthPanelRoute } from "./growth-panel-service.mjs";
 import { pronunciationRoute } from "./pronunciation-route.mjs";
 import { speakingRoute } from "./speaking-route.mjs";
@@ -2909,6 +2910,11 @@ export default {
     }
     if (path.startsWith('/api/english/speaking/')) {
       return speakingRoute(req, env, { requireUser, sbFetch });
+    }
+    // 클래스 /admin '회원 등급 운영 조회'(2026-08-01 화면) — 서버 쪽이 옛 공유 트리 backup-clean(93dd0a12)에만 있고
+    //   10-17 라이브 소스 정리 때 빠져 화면이 늘 404 였다(2026-10-19 발견). 운영자 이메일만, 읽기만.
+    if (path === "/api/class/admin-member-tier") {
+      return classMemberTierAdminRoute(req, env, cors, { json, requireUser, sbFetch });
     }
     if (path === '/api/class/email-recovery/send' || path === '/api/class/email-recovery/submit') {
       return classEmailRecoveryRoute(req, env, cors, {
