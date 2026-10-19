@@ -172,6 +172,8 @@ async function requireUser(req, env) {
       email: String(u.email || "").toLowerCase(),
       metadata: u.user_metadata && typeof u.user_metadata === "object" ? u.user_metadata : {},
       providers: provs,
+      // 네이버 로그인 워커(진단)가 남기는 서버 전용 표식 — 네이버가 확인한 이메일(2026-10-19). 회원 화면에서 못 바꾼다.
+      naverEmail: typeof am.naver_email === "string" ? am.naver_email.toLowerCase() : "",
       emailConfirmed: !!u.email_confirmed_at,
       isAnonymous: u.is_anonymous === true,
     } : null;
@@ -652,7 +654,9 @@ async function tryAutoUnsuppress(env, email, lane) {
   }
   try {                                                   // ① 관측된 반송 이력(90일)
     const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
-    const r = await sbFetch(env, `email_bounces?email=eq.${encodeURIComponent(email)}&occurred_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
+    // 🔴 event='suppressed' 는 반송이 아니다 — 이미 차단된 주소로 우리가 보내려다 막힌 기록(차단의 결과)이다.
+    //   그걸 '관측된 반송'으로 세면 8/23 대량 메일 때 차단된 주소가 90일 동안 영영 구제되지 않는다(2026-10-19 실측 110명).
+    const r = await sbFetch(env, `email_bounces?email=eq.${encodeURIComponent(email)}&occurred_at=gte.${encodeURIComponent(since)}&event=neq.suppressed&select=id&limit=1`);
     if (!r.ok) return false;
     if ((await r.json()).length) return false;
   } catch { return false; }                               // ③ 모르면 건드리지 않는다
@@ -2726,7 +2730,10 @@ async function findByBackupEmail(req, env, cors) {
 async function classAutoLink(req, env, cors) {
   const user = await requireUser(req, env);
   if (!user) return json({ ok: false, error: "login_required" }, 401, cors);
-  const social = user.providers.some((p) => p === "google" || p === "kakao" || p === "naver");
+  // 네이버 계정은 겉모양이 '이메일 가입'(provider=email)이라 예전엔 빠졌다(2026-10-19 실측: 17명·44강좌 미연결).
+  //   진단 워커가 네이버 확인 뒤 남긴 app_metadata.naver_email 이 로그인 이메일과 같을 때만 같은 대우를 한다.
+  const naverVerified = Boolean(user.naverEmail) && user.naverEmail === normEmail(user.email);
+  const social = naverVerified || user.providers.some((p) => p === "google" || p === "kakao" || p === "naver");
   if (!social) return json({ ok: true, linked: [], reason: "not_social" }, 200, cors);
   const email = normEmail(user.email);
   if (!email) return json({ ok: true, linked: [], reason: "no_email" }, 200, cors);
@@ -2907,7 +2914,7 @@ export default {
       return classEmailRecoveryRoute(req, env, cors, {
         json, requireUser, sbFetch, hmacHex, timingSafeEq, sha256Hex,
         otpSendAllowed, otpGuardIssue, otpGuardConsume, otpGuardBurn,
-        isEmailSuppressed, sendResendEmail, otpEmailHtml, findClassEnrollments,
+        isEmailSuppressed, tryAutoUnsuppress, sendResendEmail, otpEmailHtml, findClassEnrollments,
       });
     }
 

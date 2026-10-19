@@ -11,7 +11,7 @@ export function recoveryMessage(user, claimedEmail, code, exp) {
 export async function classEmailRecoveryRoute(req, env, cors, deps) {
   const { json, requireUser, sbFetch, hmacHex, timingSafeEq, sha256Hex,
     otpGuardIssue, otpGuardConsume, otpGuardBurn,
-    isEmailSuppressed, sendResendEmail, otpEmailHtml, findClassEnrollments } = deps;
+    isEmailSuppressed, tryAutoUnsuppress, sendResendEmail, otpEmailHtml, findClassEnrollments } = deps;
   const fail = (error, status = 400) => json({ ok: false, error }, status, cors);
   if (req.method !== 'POST') return fail('method', 405);
   const user = await requireUser(req, env);
@@ -26,7 +26,10 @@ export async function classEmailRecoveryRoute(req, env, cors, deps) {
   try {
     if (isSend) {
       if ((await env.OTP_SEND_LIMIT.limit({ key: await sha256Hex(user.email) }))?.success !== true) return fail('too_many_requests', 429);
-      if (await isEmailSuppressed(env, user.email, 'auth')) return fail('suppressed', 422);
+      // 차단 목록에 있으면 로그인 코드와 같은 '한 번 자동 해제'를 먼저 시도한다(2026-10-19 — 이 경로만 빠져 있어
+      //   8/23 대량 메일 때 차단된 회원이 이전 신청을 영영 못 했다). 해제가 안 되면 그때 suppressed.
+      if (await isEmailSuppressed(env, user.email, 'auth')
+        && !(typeof tryAutoUnsuppress === 'function' && await tryAutoUnsuppress(env, user.email, 'auth'))) return fail('suppressed', 422);
       const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0');
       const exp = Date.now() + TTL;
       const token = `${exp}.${await hmacHex(env.OTP_SECRET, recoveryMessage(user, claimedEmail, code, exp))}`;
