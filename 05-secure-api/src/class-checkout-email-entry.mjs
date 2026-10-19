@@ -20,7 +20,7 @@ export default {
   return response;
  },
  async scheduled(event,env,ctx){
-  if(event.cron==='*/5 * * * *'){ctx.waitUntil(processCheckoutEmails(env));return;}
+  if(event.cron==='*/5 * * * *')ctx.waitUntil(processCheckoutEmails(env));
   if(live.scheduled)await live.scheduled(event,env,ctx);
  }
 };

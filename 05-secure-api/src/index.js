@@ -7,6 +7,7 @@
 
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { lifecycleMailKey, lifecycleClaimDecision } from "./lifecycle-idempotency.js";
+import { processMigrationOfferEmails } from './class-migration-offer-email.mjs';
 import { contentPointRoute } from "./content-point-service.mjs";
 import { stellaUpgradeEmailRoute } from "./stella-upgrade-email-service.mjs";
 import { cafeDecisionEmailPatch, cafeMailResult } from "./cafe-transfer-mail.mjs";
@@ -922,6 +923,28 @@ async function marketingHeadersFor(env, email, channel) {
 }
 function API_ORIGIN(env) {
   return env.PUBLIC_API_ORIGIN || "https://literstella-api.literbryanbae.workers.dev";
+}
+
+async function processClassMigrationOffers(env) {
+  const key = resendKey(env);
+  return processMigrationOfferEmails(env, {
+    key, from: marketingFrom(env), wrapHtml: brandEmailHtml,
+    db: async (path, init = {}) => {
+      const response = await sbFetch(env, path, { ...init, signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw Error('migration_offer_storage_unavailable');
+      return response.status === 204 ? null : response.json();
+    },
+    unsubscribeFor: async email => `${API_ORIGIN(env)}/api/unsub?t=${await unsubToken(env, email, 'marketing')}`,
+    headersFor: email => marketingHeadersFor(env, email, 'marketing'),
+    send: async (envelope, idempotencyKey) => {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(envelope), signal: AbortSignal.timeout(8000),
+      });
+      const result = await response.json().catch(() => null);
+      return { ok: response.ok, status: response.status, id: result?.id };
+    },
+  });
 }
 
 // 채널별로 실제 수신을 끈다. 각 채널의 정본 저장소가 다르므로 여기서 한곳에 모아 둔다.
@@ -3130,6 +3153,10 @@ export default {
 
   // 기존 안내 메일 스케줄만 유지한다. 결제 자동청구는 지원하지 않는다.
   async scheduled(event, env, ctx) {
+    if (event.cron === '*/5 * * * *') {
+      ctx.waitUntil(processClassMigrationOffers(env));
+      return;
+    }
     const scheduledDate = new Date(event.scheduledTime);
     if (event.cron === MIGRATION_CRON) {
       if (scheduledDate.getUTCFullYear() === 2026) ctx.waitUntil(runMigrationNoticeCampaign(env));

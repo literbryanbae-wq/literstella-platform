@@ -50,6 +50,7 @@
   //   새 변수는 여기에 먼저 적는다(대시보드에서만 바꾸면 다음 배포가 되돌린다).
   //   폐기한 옛 결제 공급자의 공개 설정 2개는 2026-10-12 운영에서 지웠다(10-12 폐기 인계 — README.md '2026-10-12 연동 폐기') — 되살리지 말 것.
   "vars": {
+    "CLASS_MIGRATION_OFFER_ENABLED": "true", // Consent-only migration offer queue; success-gift issuance is not enabled.
     "SPEAKING_ENABLED": "true", // 2026-10-11 operator activation; DB trial expiry and five-concurrent guard remain authoritative.
     "ADMIN_API_ENABLED": "true",    // #8b 관리자 service_role 라우트 — ON(총괄 2026-08-14, 운영자 지시로 강의 알림 메일 발송 경로 개방)
     //   🔴 이 라우트는 전부 **관리자 이메일 OTP**(/api/admin/auth) 뒤에 있다 — 플래그만으로는 아무도 발송 못 한다.

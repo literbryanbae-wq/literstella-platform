@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 const source=await readFile(new URL('./src/class-checkout-email-entry.mjs',import.meta.url),'utf8');
-const stub=`const live={fetch:async()=>new Response(JSON.stringify(globalThis.checkoutResult)),scheduled:async()=>{globalThis.oldCronCalls++;}};
+const stub=`const live={fetch:async()=>new Response(JSON.stringify(globalThis.checkoutResult)),scheduled:async(event,env,ctx)=>{if(event.cron==='*/5 * * * *'){ctx.waitUntil(processClassMigrationOffers(env));return;}globalThis.oldCronCalls++;}};
 const processCheckoutEmails=async(env,id)=>{globalThis.mailCalls.push(id);};
+const processClassMigrationOffers=async()=>{globalThis.migrationMailCalls++;};
 const checkoutEmailAdmin=async()=>new Response('{}');`;
 const replaced=source.replace(/^import .*;\r?\n/gm,'').replace(/^export \* .*;\r?\n/gm,'');
 const {default:worker}=await import('data:text/javascript;base64,'+Buffer.from(stub+replaced).toString('base64'));
 globalThis.checkoutResult={status:'paid',granted:true,orderId:'test-order'};
-globalThis.mailCalls=[];globalThis.oldCronCalls=0;
+globalThis.mailCalls=[];globalThis.oldCronCalls=0;globalThis.migrationMailCalls=0;
 const pending=[];const ctx={waitUntil:p=>pending.push(p)};
 const call=(path,method='POST')=>worker.fetch(new Request('https://api.test'+path,{method}),{},ctx);
 for(const path of ['confirm','status','webhook'])assert.deepEqual(await (await call('/api/class-checkout/'+path)).json(),globalThis.checkoutResult);
@@ -19,4 +20,5 @@ globalThis.checkoutResult={status:'canceled',granted:false};await call('/api/cla
 assert.equal(globalThis.mailCalls.length,5);
 await worker.scheduled({cron:'25 18 * * *'},{},ctx);assert.equal(globalThis.oldCronCalls,1);
 await worker.scheduled({cron:'*/5 * * * *'},{},ctx);assert.equal(globalThis.oldCronCalls,1);assert.equal(globalThis.mailCalls.length,6);
+await Promise.all(pending);assert.equal(globalThis.migrationMailCalls,1);
 console.log('checkout email wrapper: response, route, and existing cron preservation PASS');
