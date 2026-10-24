@@ -96,29 +96,29 @@ async function call(sub, tok, body = {}) {
   return { status: res.status, body: await res.json() };
 }
 
-// ① 올인원 8/8 + 포인트 헬퍼 → 소울(두 번째 문). 포인트 수치는 사실 그대로.
+// ① 올인원 8/8 + 포인트 헬퍼 → 스텔라(운영자 결정 2026-10-24). 포인트 수치는 사실 그대로.
 {
   const r = await call('progress', 'tok-owner');
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(r.body.effectiveMode, 'soul');
+  assert.equal(r.body.effectiveMode, 'stella');
   assert.equal(r.body.viaAllInOne, true);
   assert.equal(r.body.pointMode, 'helper', '포인트 등급은 그대로(모드만 올린다)');
   assert.equal(r.body.cumulativeEarnedPoints, 100);
   assert.equal(r.body.nextThreshold, null);
   assert.equal(r.body.pointsToNext, 0);
-  assert.equal(r.body.stellaUnlocked, false);
+  assert.equal(r.body.stellaUnlocked, true);
   const g = gateCalls.at(-1);
   assert.equal(g.path, '/premium-status'); assert.equal(g.method, 'POST'); assert.equal(g.auth, 'Bearer tok-owner');
-  ok('올인원 8/8 + 100P → soul · viaAllInOne · 포인트 수치 불변 · class-gate 에 회원 토큰으로 물었다');
+  ok('올인원 8/8 + 100P → stella · viaAllInOne · 포인트 수치 불변 · class-gate 에 회원 토큰으로 물었다');
 }
 
-// ② 포인트로 이미 소울이면 출처는 포인트(viaAllInOne 없음)
+// ② 포인트로 소울이어도 올인원 소장이면 스텔라(출처 올인원)
 {
   const r = await call('progress', 'tok-richowner');
-  assert.equal(r.body.effectiveMode, 'soul');
-  assert.equal(r.body.viaAllInOne, undefined);
+  assert.equal(r.body.effectiveMode, 'stella');
+  assert.equal(r.body.viaAllInOne, true);
   assert.equal(r.body.pointMode, 'soul');
-  ok('2,500P 소장 회원 → soul(포인트 출처) · viaAllInOne 없음');
+  ok('2,500P 올인원 소장 회원 → stella(올인원 출처) · 포인트 등급 soul 그대로');
 }
 
 // ③ 비소장 → 포인트 등급 그대로
@@ -147,13 +147,23 @@ async function call(sub, tok, body = {}) {
 // ⑤ 🔴 만료된 초대권은 열지 않는다(옛 applyInvite 는 activated 만 봐서 만료 뒤에도 열렸다)
 {
   const r = await call('progress', 'tok-expired');
-  assert.notEqual(r.body.effectiveMode, 'stella', '🔴 만료된 초대권으로 스텔라가 열렸다');
-  assert.equal(r.body.viaInvite, undefined);
-  assert.equal(r.body.effectiveMode, 'soul', '만료 초대권 + 올인원 → 소울');
+  assert.equal(r.body.viaInvite, undefined, '🔴 만료된 초대권이 출처로 남았다');
+  assert.equal(r.body.effectiveMode, 'stella', '만료 초대권 + 올인원 → 스텔라(올인원 출처, 2026-10-24)');
   assert.equal(r.body.viaAllInOne, true);
   const e = await call('entitlements', 'tok-expired', { book: 'anne' });
   assert.equal(e.body.stellaUnlocked, false);
-  ok('만료 초대권 → 스텔라 아님(올인원이라 soul) · 소장 정보 stellaUnlocked=false');
+  ok('만료 초대권 → 초대권 출처 아님(올인원이라 stella) · 소장 정보 stellaUnlocked=false');
+}
+
+// ⑤-b 강의 듣기 보상(study)도 라일라 단계에 센다(운영자 결정 2026-10-24)
+{
+  const { pointProgressFromTransactions, lyraPointLevelFor, LYRA_ELIGIBLE_REASONS } = await import('./src/lyra-policy.mjs');
+  const p = pointProgressFromTransactions([{ amount: 500, reason: 'signup' }, ...Array.from({ length: 100 }, () => ({ amount: 5, reason: 'study' }))]);
+  assert.equal(p.cumulativeEarnedPoints, 500, '강의 듣기 100회(500P)는 세고 가입 축하 500P 는 세지 않는다');
+  assert.ok(LYRA_ELIGIBLE_REASONS.includes('study'), '🔴 강의 듣기 보상이 라일라 단계에서 빠져 있다');
+  assert.ok(!LYRA_ELIGIBLE_REASONS.includes('signup'), '가입 축하 500P 는 여전히 세지 않는다');
+  assert.equal(lyraPointLevelFor(p.cumulativeEarnedPoints).key, 'mate', '강의만 꾸준히 들어도 메이트');
+  ok('강의 듣기(study) 포인트가 라일라 단계에 들어간다 · 가입 축하는 제외 그대로');
 }
 
 // ⑥ 완독 7종 · 운영자 계정 → 스텔라(올인원보다 위)

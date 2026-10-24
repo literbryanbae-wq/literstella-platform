@@ -483,11 +483,11 @@ async function buildMemberProgress(env, sbFetch, authUser, userToken = '') {
       ? { effectiveMode: 'stella', stellaUnlocked: true, viaInvite: true, inviteExpiresAt: invite?.expiresAt || null }
       : {}),
   };
-  // 소울 두 번째 문 — 스텔라가 아니고 포인트 등급이 소울 미만일 때만 모드를 올린다.
-  //   포인트·완독 수치는 사실 그대로 둔다(초대권과 같은 원칙). viaAllInOne = 화면이 '올인원으로 열림'을 구분하게.
-  //   진화 축하 연출은 띄우지 않는다 — 친해져서 변한 게 아니다(라일라 담당 메모 2026-09-25).
-  if (allInOne.known && allInOne.owns && (LYRA_MODE_RANK[out.effectiveMode] ?? 0) < LYRA_MODE_RANK.soul) {
-    return { ...out, effectiveMode: 'soul', viaAllInOne: true, nextThreshold: null, pointsToNext: 0 };
+  // 올인원 8/8 소장 = 스텔라(운영자 결정 2026-10-24 — 9/25 의 '소울 두 번째 문'을 스텔라로 올렸다).
+  //   완독·초대권으로 이미 스텔라면 그 출처를 그대로 둔다. 포인트·완독 수치는 사실 그대로(초대권과 같은 원칙).
+  //   viaAllInOne = 화면·라일라가 '올인원으로 열림'을 구분하게. 진화 축하 연출은 띄우지 않는다.
+  if (allInOne.known && allInOne.owns && !out.stellaUnlocked) {
+    return { ...out, effectiveMode: 'stella', stellaUnlocked: true, viaAllInOne: true, nextThreshold: null, pointsToNext: 0 };
   }
   return out;
 }

@@ -31,6 +31,8 @@ export const LYRA_ELIGIBLE_REASONS = Object.freeze([
   'review',
   'feedback',
   'badge',
+  // 강의 끝까지 듣기 보상 — 라일라 단계에 넣는다(운영자 결정 2026-10-24).
+  'study',
 ]);
 
 const ELIGIBLE_REASON_SET = new Set(LYRA_ELIGIBLE_REASONS);
