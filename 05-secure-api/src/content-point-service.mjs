@@ -8,6 +8,7 @@ import {
   ownershipLevelForCount,
   quoteContentItem,
   quoteRemainingBundle,
+  storyEpisodeForLecture,
 } from './content-point-pricing.mjs';
 import {
   LYRA_POLICY_VERSION,
@@ -237,10 +238,28 @@ async function fetchCatalogBook(env, sbFetch, book) {
   );
 }
 
-function flagsFor(entitlements, book, episodeNo) {
+// 강의·스토리가 서로 여는 관계는 storyEpisodeForLecture 표를 따른다(오즈 = 한 장이 여러 강).
+//   스토리 편 N: 그 편을 여는 강의 하나라도 가졌으면 가진 것.
+//   강의 N: 함께 여는 편을 가졌나(hasStoryAccess) + 같은 편의 다른 강을 이미 가졌나(storyCreditUsed — 차액 할인은 편마다 한 번).
+function flagsFor(entitlements, book, episodeNo, surface = CONTENT_SURFACE.AI_LECTURE) {
+  const ownedLectures = [];
+  for (const key of entitlements) {
+    const match = String(key).match(/^lecture:([a-z0-9_-]+):([1-9]\d*)$/);
+    if (match && match[1] === book) ownedLectures.push(Number(match[2]));
+  }
+  if (surface === CONTENT_SURFACE.STORY) {
+    return {
+      hasStoryAccess: entitlements.has(`story:${book}:${episodeNo}`),
+      hasAiLectureAccess: ownedLectures.some((n) => storyEpisodeForLecture(book, n) === episodeNo),
+    };
+  }
+  const storyNo = storyEpisodeForLecture(book, episodeNo);
   return {
-    hasStoryAccess: entitlements.has(`story:${book}:${episodeNo}`),
+    hasStoryAccess: storyNo ? entitlements.has(`story:${book}:${storyNo}`) : false,
     hasAiLectureAccess: entitlements.has(`lecture:${book}:${episodeNo}`),
+    storyCreditUsed: storyNo
+      ? ownedLectures.some((n) => n !== episodeNo && storyEpisodeForLecture(book, n) === storyNo)
+      : false,
   };
 }
 
@@ -271,7 +290,7 @@ async function buildItemQuote({
     episodeNo,
     ownedCount: ownership.level.count,
     isStella: completion.completedCount === 7 || !!completion.inviteStella,
-    ...flagsFor(entitlements, book, episodeNo),
+    ...flagsFor(entitlements, book, episodeNo, surface),
   });
   if (quote.access === 'points') {
     const published = await fetchCatalogItem(env, sbFetch, surface, book, episodeNo);
@@ -301,7 +320,7 @@ async function buildBundleQuote({
       surface: row.surface,
       book,
       episodeNo: normalizeEpisodeNo(row.episode_no),
-      ...flagsFor(entitlements, book, normalizeEpisodeNo(row.episode_no)),
+      ...flagsFor(entitlements, book, normalizeEpisodeNo(row.episode_no), row.surface),
     }))
     .filter((item) => item.episodeNo);
   return {

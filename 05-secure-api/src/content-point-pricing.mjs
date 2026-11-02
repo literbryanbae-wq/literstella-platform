@@ -55,6 +55,22 @@ const SHOWCASE_OWNED_MIN = 7;
 // (1장 = 1~4강) 'AI 강의 N 을 사면 스토리 N 도 열림' 묶음이 엉뚱한 편을 연다. 이 책은 강의를 사면
 // 강의 키만 열리고, 스토리를 먼저 샀어도 강의 차액 할인이 없다. 라이브 f696bc38(2026-10-17)과 같은 규칙.
 const LECTURE_ONLY_BOOKS = new Set(['littleprince']);
+// 강 번호와 편(장) 번호가 어긋나는 책의 '강 → 함께 열리는 스토리 편' 표(운영자 2026-11-02 "강독 우선 —
+// 관련 스토리는 함께 열린다 · 스토리를 먼저 산 분의 차액 할인은 스토리마다 한 번").
+//   오즈 v3.2.2 강독은 한 장을 여러 강으로 나눈다(1장 3강 · 2장 5강 · 3장 5강 · 4장 4강 · 5장 5강 = 22강).
+//   값 = 엔진 final.json·클래스 public/stella/oz.json 의 chapter 칸(팩토리 확인 2026-11-02). 스토리 oz-N = N장.
+//   🔴 표에 없는 강은 스토리를 열지 않는다(fail-closed) — 23강부터는 표를 늘린 뒤에 판다.
+//   표에 없는 책은 예전처럼 강 N = 편 N(행복한 왕자·작별).
+const LECTURE_STORY_MAP = Object.freeze({
+  oz: Object.freeze([
+    null,
+    1, 1, 1,
+    2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3,
+    4, 4, 4, 4,
+    5, 5, 5, 5, 5,
+  ]),
+});
 
 const BOOK_ALIASES = Object.freeze({
   'happy-prince': 'happyprince',
@@ -93,6 +109,16 @@ export function nextOwnershipLevel(ownedCount) {
   return current.count < 7 ? OWNERSHIP_LEVELS[current.count + 1] : null;
 }
 
+// 강의 N 을 사면 함께 열리는 스토리 편 번호 — 없으면 null(강의만 열린다).
+export function storyEpisodeForLecture(book, lectureNo) {
+  const normalizedBook = normalizeBookCode(book);
+  const no = normalizeEpisodeNo(lectureNo);
+  if (!normalizedBook || !no || LECTURE_ONLY_BOOKS.has(normalizedBook)) return null;
+  const map = LECTURE_STORY_MAP[normalizedBook];
+  if (map) return normalizeEpisodeNo(map[no]);
+  return no;
+}
+
 export function entitlementKeysFor(surface, book, episodeNo) {
   const normalizedBook = normalizeBookCode(book);
   const no = normalizeEpisodeNo(episodeNo);
@@ -101,10 +127,11 @@ export function entitlementKeysFor(surface, book, episodeNo) {
     return [`story:${normalizedBook}:${no}`];
   }
   if (surface === CONTENT_SURFACE.AI_LECTURE) {
-    if (LECTURE_ONLY_BOOKS.has(normalizedBook)) return [`lecture:${normalizedBook}:${no}`];
+    const storyNo = storyEpisodeForLecture(normalizedBook, no);
+    if (!storyNo) return [`lecture:${normalizedBook}:${no}`];
     return [
       `lecture:${normalizedBook}:${no}`,
-      `story:${normalizedBook}:${no}`,
+      `story:${normalizedBook}:${storyNo}`,
     ];
   }
   return [];
@@ -118,6 +145,7 @@ export function quoteContentItem({
   isStella = false,
   hasStoryAccess = false,
   hasAiLectureAccess = false,
+  storyCreditUsed = false,
   hasNewsletterSubscription = false,
 } = {}) {
   const normalizedBook = normalizeBookCode(book);
@@ -181,8 +209,13 @@ export function quoteContentItem({
     };
   }
 
+  // 스토리 차액 할인은 그 스토리(편)마다 한 번 — 같은 편의 다른 강을 이미 열었으면(storyCreditUsed) 정가.
+  //   hasStoryAccess = 이 강이 함께 여는 편을 이미 가졌나(부르는 쪽이 storyEpisodeForLecture 로 맞춰 넘긴다).
   const storyUpgrade =
-    surface === CONTENT_SURFACE.AI_LECTURE && hasStoryAccess && !LECTURE_ONLY_BOOKS.has(normalizedBook);
+    surface === CONTENT_SURFACE.AI_LECTURE
+    && hasStoryAccess
+    && !storyCreditUsed
+    && !!storyEpisodeForLecture(normalizedBook, no);
   const basePoints = storyUpgrade
     ? listedBase - POINT_BASE_PRICE[CONTENT_SURFACE.STORY]
     : listedBase;
@@ -218,14 +251,30 @@ export function quoteRemainingBundle({
     if (!uniqueItems.has(key)) uniqueItems.set(key, { ...item, book, episodeNo: no });
   }
 
-  for (const item of uniqueItems.values()) {
-    if (item.surface !== CONTENT_SURFACE.AI_LECTURE || LECTURE_ONLY_BOOKS.has(item.book)) continue;
-    uniqueItems.delete(`${CONTENT_SURFACE.STORY}:${item.book}:${item.episodeNo || ''}`);
+  // 강의가 함께 여는 스토리 편은 묶음에서 따로 세지 않는다(강의 값에 들어 있다).
+  for (const item of [...uniqueItems.values()]) {
+    if (item.surface !== CONTENT_SURFACE.AI_LECTURE) continue;
+    const storyNo = storyEpisodeForLecture(item.book, item.episodeNo);
+    if (storyNo) uniqueItems.delete(`${CONTENT_SURFACE.STORY}:${item.book}:${storyNo}`);
   }
 
-  const quotes = [...uniqueItems.values()].map((item) =>
-    quoteContentItem({ ...item, ownedCount: level.count, isStella }),
-  );
+  // 묶음 안에서도 스토리 차액 할인은 편마다 한 번 — 강 번호 순서로 첫 강에만.
+  const creditTaken = new Set();
+  const ordered = [...uniqueItems.values()].sort((a, b) => (a.episodeNo || 0) - (b.episodeNo || 0));
+  const quotes = ordered.map((item) => {
+    const storyNo = item.surface === CONTENT_SURFACE.AI_LECTURE
+      ? storyEpisodeForLecture(item.book, item.episodeNo)
+      : null;
+    const creditKey = storyNo ? `${item.book}:${storyNo}` : null;
+    const quote = quoteContentItem({
+      ...item,
+      storyCreditUsed: !!item.storyCreditUsed || (creditKey ? creditTaken.has(creditKey) : false),
+      ownedCount: level.count,
+      isStella,
+    });
+    if (creditKey && quote.reason === 'story_to_ai_upgrade') creditTaken.add(creditKey);
+    return quote;
+  });
   const pointItems = quotes.filter((quote) => quote.access === 'points');
   const excludedItems = quotes.filter((quote) => quote.access !== 'points');
   const subtotalPoints = pointItems.reduce(
