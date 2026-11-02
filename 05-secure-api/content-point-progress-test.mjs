@@ -96,29 +96,29 @@ async function call(sub, tok, body = {}) {
   return { status: res.status, body: await res.json() };
 }
 
-// ① 올인원 8/8 + 포인트 헬퍼 → 소울(두 번째 문). 포인트 수치는 사실 그대로.
+// ① 올인원 8/8 + 포인트 헬퍼 → 스텔라(운영자 결정 2026-10-24). 포인트 수치는 사실 그대로.
 {
   const r = await call('progress', 'tok-owner');
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(r.body.effectiveMode, 'soul');
+  assert.equal(r.body.effectiveMode, 'stella');
   assert.equal(r.body.viaAllInOne, true);
   assert.equal(r.body.pointMode, 'helper', '포인트 등급은 그대로(모드만 올린다)');
   assert.equal(r.body.cumulativeEarnedPoints, 100);
   assert.equal(r.body.nextThreshold, null);
   assert.equal(r.body.pointsToNext, 0);
-  assert.equal(r.body.stellaUnlocked, false);
+  assert.equal(r.body.stellaUnlocked, true);
   const g = gateCalls.at(-1);
   assert.equal(g.path, '/premium-status'); assert.equal(g.method, 'POST'); assert.equal(g.auth, 'Bearer tok-owner');
-  ok('올인원 8/8 + 100P → soul · viaAllInOne · 포인트 수치 불변 · class-gate 에 회원 토큰으로 물었다');
+  ok('올인원 8/8 + 100P → stella · viaAllInOne · 포인트 수치 불변 · class-gate 에 회원 토큰으로 물었다');
 }
 
-// ② 포인트로 이미 소울이면 출처는 포인트(viaAllInOne 없음)
+// ② 포인트로 소울이어도 올인원 소장이면 스텔라(출처 올인원)
 {
   const r = await call('progress', 'tok-richowner');
-  assert.equal(r.body.effectiveMode, 'soul');
-  assert.equal(r.body.viaAllInOne, undefined);
+  assert.equal(r.body.effectiveMode, 'stella');
+  assert.equal(r.body.viaAllInOne, true);
   assert.equal(r.body.pointMode, 'soul');
-  ok('2,500P 소장 회원 → soul(포인트 출처) · viaAllInOne 없음');
+  ok('2,500P 올인원 소장 회원 → stella(올인원 출처) · 포인트 등급 soul 그대로');
 }
 
 // ③ 비소장 → 포인트 등급 그대로
@@ -147,13 +147,12 @@ async function call(sub, tok, body = {}) {
 // ⑤ 🔴 만료된 초대권은 열지 않는다(옛 applyInvite 는 activated 만 봐서 만료 뒤에도 열렸다)
 {
   const r = await call('progress', 'tok-expired');
-  assert.notEqual(r.body.effectiveMode, 'stella', '🔴 만료된 초대권으로 스텔라가 열렸다');
-  assert.equal(r.body.viaInvite, undefined);
-  assert.equal(r.body.effectiveMode, 'soul', '만료 초대권 + 올인원 → 소울');
+  assert.equal(r.body.viaInvite, undefined, '🔴 만료된 초대권이 출처로 남았다');
+  assert.equal(r.body.effectiveMode, 'stella', '만료 초대권 + 올인원 → 스텔라(올인원 출처, 2026-10-24)');
   assert.equal(r.body.viaAllInOne, true);
   const e = await call('entitlements', 'tok-expired', { book: 'anne' });
   assert.equal(e.body.stellaUnlocked, false);
-  ok('만료 초대권 → 스텔라 아님(올인원이라 soul) · 소장 정보 stellaUnlocked=false');
+  ok('만료 초대권 → 초대권 출처 아님(올인원이라 stella) · 소장 정보 stellaUnlocked=false');
 }
 
 // ⑥ 완독 7종 · 운영자 계정 → 스텔라(올인원보다 위)
@@ -162,10 +161,12 @@ async function call(sub, tok, body = {}) {
   assert.equal(f.body.effectiveMode, 'stella');
   assert.equal(f.body.stellaUnlocked, true);
   assert.equal(f.body.viaInvite, undefined);
-  assert.equal(f.body.viaAllInOne, undefined);
+  // 라이브(2026-10-24 배포 9a37d1d9)는 이미 스텔라여도 올인원 소장이면 viaAllInOne 을 붙인다 — 그 동작을 그대로 지킨다.
+  //   (PR #1 은 '이미 스텔라면 그대로'로 고치려 했지만 그 부분은 배포되지 않았다. 바꾸려면 운영자 결정 뒤 따로.)
+  assert.equal(f.body.viaAllInOne, true);
   const a = await call('progress', 'tok-admin');
   assert.equal(a.body.effectiveMode, 'stella');
-  ok('완독 7종·운영자 → stella(올인원 표식 없음)');
+  ok('완독 7종·운영자 → stella(올인원 소장이면 라이브처럼 viaAllInOne 표식)');
 }
 
 // ⑦ class-gate 장애·지연 → 올리지 않는다(올리는 쪽 fail-open 금지) · 응답은 정상
