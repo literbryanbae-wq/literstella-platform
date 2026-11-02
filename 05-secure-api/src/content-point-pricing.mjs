@@ -57,9 +57,9 @@ const SHOWCASE_OWNED_MIN = 7;
 const LECTURE_ONLY_BOOKS = new Set(['littleprince']);
 // 강 번호와 편(장) 번호가 어긋나는 책의 '강 → 함께 열리는 스토리 편' 표(운영자 2026-11-02 "강독 우선 —
 // 관련 스토리는 함께 열린다 · 스토리를 먼저 산 분의 차액 할인은 스토리마다 한 번").
-//   오즈 v3.2.2 강독은 한 장을 여러 강으로 나눈다(1장 3강 · 2장 5강 · 3장 5강 · 4장 4강 · 5장 5강 = 22강).
+//   오즈 v3.2.2 강독은 한 장을 여러 강으로 나눈다(1장 3강 · 2장 5강 · 3장 5강 · 4장 4강 · 5장 5강 · 6장 4강 = 26강).
 //   값 = 엔진 final.json·클래스 public/stella/oz.json 의 chapter 칸(팩토리 확인 2026-11-02). 스토리 oz-N = N장.
-//   🔴 표에 없는 강은 스토리를 열지 않는다(fail-closed) — 23강부터는 표를 늘린 뒤에 판다.
+//   🔴 표에 없는 강은 스토리를 열지 않는다(fail-closed) — 27강부터(7장~)는 표를 늘린 뒤에 판다.
 //   표에 없는 책은 예전처럼 강 N = 편 N(행복한 왕자·작별).
 const LECTURE_STORY_MAP = Object.freeze({
   oz: Object.freeze([
@@ -69,6 +69,7 @@ const LECTURE_STORY_MAP = Object.freeze({
     3, 3, 3, 3, 3,
     4, 4, 4, 4,
     5, 5, 5, 5, 5,
+    6, 6, 6, 6, // 23~26강 = 6장(운영자 11-02 "그래" — 팩토리 엔진 계획표 lecture-plan-from-ch6.json)
   ]),
 });
 

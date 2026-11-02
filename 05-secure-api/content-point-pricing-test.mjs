@@ -48,13 +48,13 @@ assert.deepEqual(
   entitlementKeysFor(CONTENT_SURFACE.AI_LECTURE, 'oz', 6),
   ['lecture:oz:6', 'story:oz:2'],
 );
-const OZ_CHAPTER = [null, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 5];
-for (let n = 1; n <= 22; n += 1) {
+const OZ_CHAPTER = [null, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6];
+for (let n = 1; n <= 26; n += 1) {
   assert.equal(storyEpisodeForLecture('oz', n), OZ_CHAPTER[n], `oz ${n}강`);
 }
-// 표에 없는 강은 스토리를 열지 않는다(23강~ 은 표를 늘린 뒤 판다).
-assert.equal(storyEpisodeForLecture('oz', 23), null);
-assert.deepEqual(entitlementKeysFor(CONTENT_SURFACE.AI_LECTURE, 'oz', 23), ['lecture:oz:23']);
+// 표에 없는 강은 스토리를 열지 않는다(27강~ 은 표를 늘린 뒤 판다).
+assert.equal(storyEpisodeForLecture('oz', 27), null);
+assert.deepEqual(entitlementKeysFor(CONTENT_SURFACE.AI_LECTURE, 'oz', 27), ['lecture:oz:27']);
 // 어린 왕자 = 강의만 · 표 없는 책 = 예전처럼 강 N = 편 N.
 assert.equal(storyEpisodeForLecture('littleprince', 6), null);
 assert.deepEqual(entitlementKeysFor(CONTENT_SURFACE.AI_LECTURE, 'littleprince', 6), ['lecture:littleprince:6']);
@@ -69,7 +69,8 @@ assert.equal(oz(6, { hasStoryAccess: true }).reason, 'story_to_ai_upgrade');
 assert.equal(oz(6, { hasStoryAccess: true }).payablePoints, 5);
 assert.equal(oz(7, { hasStoryAccess: true, storyCreditUsed: true }).reason, 'point_unlock');
 assert.equal(oz(7, { hasStoryAccess: true, storyCreditUsed: true }).payablePoints, 10);
-assert.equal(oz(23, { hasStoryAccess: true }).payablePoints, 10, '표에 없는 강은 차액 할인 없음');
+assert.equal(oz(27, { hasStoryAccess: true }).payablePoints, 10, '표에 없는 강은 차액 할인 없음');
+assert.equal(oz(23, { hasStoryAccess: true }).reason, 'story_to_ai_upgrade', '23강 = 6장 — 스토리 6편을 산 분은 차액 할인');
 assert.equal(quoteContentItem({
   surface: CONTENT_SURFACE.AI_LECTURE, book: 'littleprince', episodeNo: 6, ownedCount: 0, hasStoryAccess: true,
 }).payablePoints, 10);
