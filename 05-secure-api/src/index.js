@@ -5,6 +5,7 @@
 //    설계: ../DESIGN.md
 // =============================================================
 
+import { prepareChallengeOrder, confirmChallengeOrder, CHALLENGE_SOURCE_PREFIX } from "./challenge-card-checkout.mjs";
 import { renderEmail, LIFECYCLE } from "./lifecycle-emails.js";
 import { lifecycleMailKey, lifecycleClaimDecision } from "./lifecycle-idempotency.js";
 import { processMigrationOfferEmails } from './class-migration-offer-email.mjs';
@@ -400,6 +401,10 @@ async function paymentRoute(req, env, cors, sub) {
   // 신규 클래스 결제는 결제창을 열기 전에 서버에서 주문을 만든다.
   //   orderId·상품·금액·이메일을 payments에 먼저 묶어 두므로 복귀 승인 시 브라우저 payload를 신뢰하지 않는다.
   if (sub === "toss-prepare") {
+    // 챌린지 도전 카드 결제 — 클래스 결제 상점(위젯)으로 받는다(운영자 2026-11-09). 다이렉트 키(TOSS_SECRET_KEY)와 무관하다.
+    if (String(b.product || "") === "challenge") {
+      return prepareChallengeOrder({ req, env, body: b, cors, json, sbFetch, requireUser, recordPayment: recordPaymentIdempotent, newPaymentId });
+    }
     if (!env.TOSS_SECRET_KEY) return json({ ok: false, error: "toss_not_configured" }, 503, cors);
     const product = String(b.product || "");
     const prodDef = PRICE_BY_PRODUCT[product];
@@ -434,7 +439,6 @@ async function paymentRoute(req, env, cors, sub) {
   //   토큰 선택: 로그인=user 바인딩 / 게스트(상품 상세 비회원 구매)=email만 기록 → requireUser 게이트 앞에 위치.
   //   승인 없이는 돈이 이동하지 않으므로(인증만으론 미결제) 비인증 호출 허용이 안전 — paymentKey는 결제자만 가짐.
   if (sub === "toss-confirm") {
-    if (!env.TOSS_SECRET_KEY) return json({ ok: false, error: "toss_not_configured" }, 503, cors);
     const paymentKey = String(b.paymentKey || "");
     const orderId = String(b.orderId || "");
     if (!paymentKey || !orderId) return json({ ok: false, error: "missing_params" }, 400, cors);
@@ -442,9 +446,14 @@ async function paymentRoute(req, env, cors, sub) {
     const maybeUser = await requireUser(req, env); // null 허용(게스트)
 
     // 클래스 주문은 toss-prepare에서 저장한 행만 승인한다. 챌린지 단건 결제는 기존 goalDays 경로를 유지한다.
-    const preparedResponse = await sbFetch(env, `payments?id=eq.${encodeURIComponent(orderId)}&select=id,email,user_id,amount,status,source&limit=1`);
+    const preparedResponse = await sbFetch(env, `payments?id=eq.${encodeURIComponent(orderId)}&select=id,email,user_id,amount,status,source,raw,payment_key&limit=1`);
     const preparedRows = preparedResponse.ok ? await preparedResponse.json().catch(() => []) : [];
     const prepared = Array.isArray(preparedRows) ? preparedRows[0] : null;
+    // 챌린지 주문(클래스 결제 상점) — 승인과 도전 등록을 서버가 한 번에 한다.
+    if (String(prepared?.source || "").startsWith(CHALLENGE_SOURCE_PREFIX)) {
+      return confirmChallengeOrder({ env, body: b, prepared, cors, json, sbFetch, recordPayment: recordPaymentIdempotent });
+    }
+    if (!env.TOSS_SECRET_KEY) return json({ ok: false, error: "toss_not_configured" }, 503, cors);
     const preparedProduct = String(prepared?.source || "").startsWith("toss:") ? String(prepared.source).slice(5) : "";
     const prodDef = preparedProduct ? PRICE_BY_PRODUCT[preparedProduct] : null;
     const isPreparedClassOrder = !!(prepared && prodDef?.kind === "term_pass");
