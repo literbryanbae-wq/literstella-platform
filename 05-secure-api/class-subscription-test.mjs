@@ -54,11 +54,11 @@ await check('스위치가 꺼져 있으면 견적은 보이고 결제는 닫힌�
 await check('금액은 서버가 정한다 — 화면 금액이 다르면 거절', async () => {
   const w = world({ owned: 2 });
   const bad = await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 99000, acceptedTermsVersion: 'sub-2026-12' });
-  assert.equal(bad.status, 409); assert.equal(bad.body.amount, 74300);
-  const ok = await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 74300, acceptedTermsVersion: 'sub-2026-12' });
+  assert.equal(bad.status, 409); assert.equal(bad.body.amount, 77000);
+  const ok = await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 77000, acceptedTermsVersion: 'sub-2026-12' });
   assert.equal(ok.body.orderId, ORDER);
-  assert.equal(w.calls.rpc.find(([k]) => k === 'class_subscription_begin')[1].p_amount, 74300);
-  assert.equal((await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 74300, acceptedTermsVersion: 'old' })).body.error, 'terms_changed');
+  assert.equal(w.calls.rpc.find(([k]) => k === 'class_subscription_begin')[1].p_amount, 77000);
+  assert.equal((await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 77000, acceptedTermsVersion: 'old' })).body.error, 'terms_changed');
 });
 
 await check('확정: 빌링키 발급 → 한 번 청구(주문 번호 = Idempotency-Key) → 토스에 다시 물어 반영', async () => {

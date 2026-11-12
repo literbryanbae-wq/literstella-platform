@@ -9,13 +9,15 @@ export const SUBSCRIPTION_PLANS = {
 export const ALLINONE_FULL_PRICE = 398000;      // 올인원 8종 소장 정가
 export const ALLINONE_PER_OWNED = 50000;        // 이미 소장한 1권마다 빼는 금액
 export const OWNERSHIP_STEER_FROM = 4;          // 오리지널 4권 이상 소장 = 구독 대신 올인원 소장을 권한다
+export const ANNUAL_BOOKS = 9;                  // 연간 구독이 여는 책 수(오리지널 7 + 오즈 + 어린 왕자) — 겹침 할인의 분모(충돌표 22번, 운영자 2026-11-13)
 export const POINT_SHARE_MAX = 0.3;             // 구독료의 30%까지 포인트(1P = 10원)
 export const CONVERSION_DEADLINE = '2026-12-31'; // 구독 → 올인원 소장 전환 차감 기한(KST)
 
 const round100 = (n) => Math.round(n / 100) * 100;
 const ownedN = (n) => Math.max(0, Math.min(8, Math.trunc(Number(n) || 0)));
 
-/** 구독 결제 금액. 소장 겹침 할인은 연간에만(월 구독 할인은 운영자 미결정 — 정가). */
+/** 구독 결제 금액. 소장 겹침 할인은 연간에만 — 월 구독은 정가(운영자 2026-11-13 확정).
+ *  ownedCount = 소장한 오리지널 강독 수(0~7). 핵심 이론은 무료 강의라 세지 않는다(충돌표 21번). */
 export function subscriptionQuote({ plan, cycle, ownedCount = 0 } = {}) {
   const p = SUBSCRIPTION_PLANS[plan];
   if (!p || !['month', 'year'].includes(cycle)) return { ok: false, error: 'bad_plan' };
@@ -25,7 +27,7 @@ export function subscriptionQuote({ plan, cycle, ownedCount = 0 } = {}) {
   if (cycle === 'year' && owned > 0 && owned < OWNERSHIP_STEER_FROM) {
     // 개인 = 전체에서 겹치는 만큼 · 함께 읽기 = 본인 몫(1/3)에서만 겹치는 만큼
     const share = plan === 'together' ? list / p.seats : list;
-    amount = round100(list - share * (owned / 8));
+    amount = round100(list - share * (owned / ANNUAL_BOOKS));
   }
   return {
     ok: true, plan, cycle, listAmount: list, amount, ownedDiscount: list - amount,

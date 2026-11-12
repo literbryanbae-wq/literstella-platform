@@ -15,8 +15,8 @@ check('정가', () => {
 });
 
 check('소장 겹침 할인 — 11-09 운영자 결정 숫자 그대로(연간만)', () => {
-  assert.deepEqual([1, 2, 3].map((o) => subscriptionQuote({ plan: 'solo', cycle: 'year', ownedCount: o }).amount), [86600, 74300, 61900]);
-  assert.deepEqual([1, 2, 3].map((o) => subscriptionQuote({ plan: 'together', cycle: 'year', ownedCount: o }).amount), [142800, 136600, 130400]);
+  assert.deepEqual([1, 2, 3].map((o) => subscriptionQuote({ plan: 'solo', cycle: 'year', ownedCount: o }).amount), [88000, 77000, 66000]);
+  assert.deepEqual([1, 2, 3].map((o) => subscriptionQuote({ plan: 'together', cycle: 'year', ownedCount: o }).amount), [143500, 138000, 132400]);
   assert.equal(subscriptionQuote({ plan: 'solo', cycle: 'month', ownedCount: 3 }).amount, 9900, '월 구독은 정가');
 });
 

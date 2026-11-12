@@ -169,9 +169,9 @@ await check('구독 전: 소장한 책만 열려 있다', async () => {
 });
 
 let first;
-await check('연간 개인 가입: 1권 소장 할인 86,600원 · 한 번만 청구 · 강의가 열린다', async () => {
+await check('연간 개인 가입: 1권 소장 할인 88,000원 · 한 번만 청구 · 강의가 열린다', async () => {
   first = await join(U, 'solo', 'year');
-  assert.equal(first.q.amount, 86600);
+  assert.equal(first.q.amount, 88000);
   assert.equal(first.c.status, 200); assert.equal(first.c.body.status, 'paid');
   assert.equal(toss.charges, 1);
   const s = await sub(U);
@@ -185,7 +185,7 @@ await check('연간 개인 가입: 1권 소장 할인 86,600원 · 한 번만 �
 await check('같은 주문을 다시 확정해도 두 번 청구하지 않는다 · 구독 중에는 또 가입할 수 없다', async () => {
   const again = await api(U, 'confirm', { orderId: first.p.orderId, authKey: 'auth' });
   assert.equal(again.body.status, 'paid'); assert.equal(toss.charges, 1);
-  const p = await api(U, 'prepare', { plan: 'solo', cycle: 'year', expectedAmount: 86600, acceptedTermsVersion: 'sub-2026-12' });
+  const p = await api(U, 'prepare', { plan: 'solo', cycle: 'year', expectedAmount: 88000, acceptedTermsVersion: 'sub-2026-12' });
   assert.equal(p.body.error, 'already_subscribed');
 });
 
@@ -213,21 +213,21 @@ await check('자동 갱신: 기간이 끝나면 한 번 청구하고 1년 늘린
   assert.equal(new Date(after.next_charge_at).getTime(), new Date(after.current_period_end).getTime());
 });
 
-await check('전환 견적: 1권 소장 348,000원에서 지금까지 낸 구독료(86,600원 × 2)를 뺀다', async () => {
+await check('전환 견적: 1권 소장 348,000원에서 지금까지 낸 구독료(88,000원 × 2)를 뺀다', async () => {
   const r = await api(U, 'status');
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   if (today <= '2026-12-31') {
     assert.equal(r.body.conversion.basePrice, 348000);
-    assert.equal(r.body.conversion.credit, 173200);
-    assert.equal(r.body.conversion.amount, 174800);
+    assert.equal(r.body.conversion.credit, 176000);
+    assert.equal(r.body.conversion.amount, 172000);
   } else assert.equal(r.body.conversion, null, '기한이 지나면 차감 안내가 없다');
 });
 
 await check('올인원 주문서 금액(DB)도 같은 만큼 빠진다 · 소장 결제가 끝나면 구독의 다음 결제가 멈춘다', async () => {
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   const q = (await db.query(`select public.class_checkout_quote('${U}') as v`)).rows[0].v;
-  assert.equal(q.amount, today <= '2026-12-31' ? 174800 : 348000);
-  assert.equal(q.subscriptionCredit, today <= '2026-12-31' ? 173200 : 0);
+  assert.equal(q.amount, today <= '2026-12-31' ? 172000 : 348000);
+  assert.equal(q.subscriptionCredit, today <= '2026-12-31' ? 176000 : 0);
   assert.equal((await db.query(`select public.class_checkout_quote('${W}') as v`)).rows[0].v.amount, 398000, '구독 안 한 회원은 그대로');
   await db.exec(`begin; insert into public.class_checkout_orders values ('clsx', '${U}', 'confirming', 'class-stella-member-upgrade');
     update public.class_checkout_orders set status = 'paid' where id = 'clsx';`);
