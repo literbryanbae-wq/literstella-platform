@@ -16,6 +16,18 @@ const ORDER_NAMES = Object.freeze({
   100: '영어 챌린지 야나완™ 100일 도전',
 });
 // 클래스 결제 위젯 공개 키(클래스 회원 결제와 같은 값). 서버 변수 TOSS_CLASS_CLIENT_KEY 가 있으면 그쪽이 우선.
+// 포인트를 먼저 쓰고 남은 금액만 카드로(운영자 2026-11-12). 1P = 10원 · 10P 단위 · 카드로 내는 금액은 1,000원 이상 남긴다.
+//   포인트만으로 다 낼 수 있으면(30일 300P) 이 길이 아니라 기존 포인트 결제 길로 간다.
+export const POINT_WON = 10;
+export const MIN_CARD_AMOUNT = 1000;
+export const maxCardPoints = (price) => Math.max(0, Math.floor((price - MIN_CARD_AMOUNT) / POINT_WON / 10) * 10);
+// 쓸 포인트 검사 — 0·없음 = 카드 전액. 잘못된 값은 null.
+export function cardPoints(value, price) {
+  if (value == null || value === 0 || value === '') return 0;
+  const p = Number(value);
+  if (!Number.isInteger(p) || p < 10 || p % 10 !== 0 || p > maxCardPoints(price)) return null;
+  return p;
+}
 export const CLASS_WIDGET_CLIENT_KEY = 'live_gck_vZnjEJeQVxJnOWvQa2jZ8PmOoBN0';
 export const CHALLENGE_SOURCE_PREFIX = 'toss:challenge-';
 const SEASON_RE = /^yanawan-\d{4}$/;
@@ -88,17 +100,20 @@ export async function prepareChallengeOrder({ req, env, body, cors, json, sbFetc
   const misfit = intentFits(intent, enr.row);
   if (misfit) return json({ ok: false, error: misfit }, 409, cors);
   const orderId = newPaymentId();
-  const amount = CHALLENGE_CARD_PRICES[intent.goalDays];
+  const listAmount = CHALLENGE_CARD_PRICES[intent.goalDays];
+  const points = cardPoints(body.usePoints, listAmount);
+  if (points === null) return json({ ok: false, error: 'bad_points', maxPoints: maxCardPoints(listAmount) }, 400, cors);
+  const amount = listAmount - points * POINT_WON;
   const at = new Date().toISOString();
   const stored = await recordPayment(env, {
     id: orderId, email: user.email, user_id: user.id, amount, status: 'READY',
     source: `${CHALLENGE_SOURCE_PREFIX}${intent.goalDays}`,
-    raw: { ...intent, memberId, preparedAt: at },
+    raw: { ...intent, memberId, preparedAt: at, ...(points ? { points } : {}) },
     created_at: at, updated_at: at,
   });
   if (!stored) return json({ ok: false, error: 'order_store_failed' }, 503, cors);
   return json({
-    ok: true, orderId, amount, orderName: ORDER_NAMES[intent.goalDays],
+    ok: true, orderId, amount, listAmount, usePoints: points, orderName: ORDER_NAMES[intent.goalDays],
     clientKey: env.TOSS_CLASS_CLIENT_KEY || CLASS_WIDGET_CLIENT_KEY, customerKey: user.id, customerEmail: user.email,
   }, 200, cors);
 }
@@ -130,19 +145,27 @@ export async function confirmChallengeOrder({ env, body, prepared, cors, json, s
   if (!env.TOSS_CLASS_SECRET_KEY) return json({ ok: false, error: 'checkout_closed' }, 503, cors);
   const intent = prepared.raw || {};
   const goalDays = Number(intent.goalDays);
-  const expected = CHALLENGE_CARD_PRICES[goalDays];
+  const points = cardPoints(intent.points, CHALLENGE_CARD_PRICES[goalDays] || 0);
+  const expected = points === null ? 0 : (CHALLENGE_CARD_PRICES[goalDays] || 0) - points * POINT_WON;
   if (intent.kind !== 'challenge' || !expected || Number(prepared.amount) !== expected || prepared.source !== `${CHALLENGE_SOURCE_PREFIX}${goalDays}`) {
     return json({ ok: false, error: 'order_invalid' }, 409, cors);
   }
   if (Number(body.amount) !== expected) return json({ ok: false, error: 'amount_mismatch' }, 400, cors);
   const paymentKey = String(body.paymentKey || '');
   const orderId = prepared.id;
-  const result = { ok: true, orderId, goalDays, mode: intent.mode, startDate: intent.startDate || null };
+  const result = { ok: true, orderId, goalDays, mode: intent.mode, startDate: intent.startDate || null, usedPoints: points || 0, cardAmount: expected };
   if (prepared.status === 'DONE' && intent.enrolledAt) return json({ ...result, enrolled: true }, 200, cors);
 
   let paid = prepared.status === 'DONE';
   let pay = null;
   if (!paid) {
+    // 포인트를 같이 쓰는 주문: 카드 승인 전에 포인트를 먼저 잡는다(부족하면 카드를 승인하지 않는다 → 돈이 나가지 않는다).
+    //   같은 주문으로 다시 불러도 한 번만 잡힌다. 카드가 확실히 거절되면 잡은 포인트를 돌려놓는다.
+    if (points) {
+      const rr = await sbFetch(env, 'rpc/challenge_card_points_reserve', { method: 'POST', body: JSON.stringify({ p_user_id: intent.memberId, p_season: intent.season, p_points: points, p_ref: intent.ref, p_order_id: orderId }) });
+      const held = rr.ok ? await rr.json().catch(() => null) : null;
+      if (!held?.ok) return json({ ok: false, error: held?.error || 'points_unavailable', balance: held?.balance ?? null }, 409, cors);
+    }
     const cr = await fetch(`${TOSS_API}/v1/payments/confirm`, { method: 'POST', headers: classHeaders(env, { 'Idempotency-Key': orderId }), body: JSON.stringify({ paymentKey, orderId, amount: expected }) });
     pay = await cr.json().catch(() => null);
     paid = cr.ok && pay?.status === 'DONE' && pay?.totalAmount === expected;
@@ -156,7 +179,11 @@ export async function confirmChallengeOrder({ env, body, prepared, cors, json, s
       status: paid ? 'DONE' : (pay?.code || pay?.status || 'confirm_failed'),
       raw: { ...intent, ...(paid ? { paidAt: new Date().toISOString() } : {}) }, updated_at: new Date().toISOString(),
     });
-    if (!paid) return json({ ok: false, error: pay?.code || 'not_paid' }, 402, cors);
+    if (!paid) {
+      // 거절이 분명할 때만(토스가 오류 코드를 줬을 때) 포인트를 돌려놓는다. 응답을 못 받았으면 그대로 두고 다시 확인하게 한다.
+      if (points && pay?.code) await sbFetch(env, 'rpc/challenge_card_points_release', { method: 'POST', body: JSON.stringify({ p_user_id: intent.memberId, p_ref: intent.ref, p_order_id: orderId }) }).catch(() => null);
+      return json({ ok: false, error: pay?.code || 'not_paid' }, 402, cors);
+    }
   }
   const enrolled = await enrollPaid(sbFetch, env, intent);
   await recordPayment(env, {
