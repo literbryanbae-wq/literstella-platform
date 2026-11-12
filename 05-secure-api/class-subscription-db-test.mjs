@@ -83,6 +83,8 @@ end $fn$;
 await db.exec(await readFile(new URL('./supabase/migrations/20261112100000_class_subscription_billing.sql', import.meta.url), 'utf8'));
 const CONV = await readFile(new URL('./supabase/migrations/20261112110000_class_subscription_conversion.sql', import.meta.url), 'utf8');
 await db.exec(CONV); await db.exec(CONV);
+await db.exec(await readFile(new URL('./supabase/migrations/20261112120000_class_subscription_gate.sql', import.meta.url), 'utf8'));
+const gateBooks = async (email) => (await db.query(`select public.class_subscription_books_by_email('${email}') as v`)).rows[0].v;
 // 한 번 더 돌려도 된다(이미 들어간 한 줄은 건너뛴다)
 await db.exec(await readFile(new URL('./supabase/migrations/20261112100000_class_subscription_billing.sql', import.meta.url), 'utf8'));
 
@@ -161,6 +163,8 @@ await check('연간 개인 가입: 1권 소장 할인 86,600원 · 한 번만 �
   assert.equal(s.status, 'active'); assert.equal(s.billing_key, `bk_${s.customer_key}`);
   for (const b of ['anne', 'theory', 'oz', 'littleprince']) assert.equal(await access(U, 'u@example.test', b), true, b);
   assert.equal(await access(W, 'w@example.test', 'anne'), false, '구독 안 한 회원은 그대로 닫혀 있다');
+  assert.equal((await gateBooks('U@example.test')).length, 10, '강의 서버용 목록: 연간 10권(이메일 대소문자 무관)');
+  assert.equal((await gateBooks('w@example.test')).length, 0);
 });
 
 await check('같은 주문을 다시 확정해도 두 번 청구하지 않는다 · 구독 중에는 또 가입할 수 없다', async () => {
@@ -230,6 +234,7 @@ await check('결제 실패: 하루 뒤 다시 · 4번 실패하면 끝나고 강
   toss.decline = false;
   assert.equal(await access(U, 'u@example.test', 'anne'), false);
   assert.equal(await access(U, 'u@example.test', 'kidari'), true, '소장한 책은 그대로');
+  assert.equal((await gateBooks('u@example.test')).length, 0, '끝난 구독은 강의 서버에도 빈 목록');
   assert.equal(toss.charges, 2);
 });
 
@@ -238,6 +243,7 @@ await check('월 함께 읽기 가입 → 해지: 다음 결제만 멈추고 낸
   assert.equal(j.q.amount, 14900); assert.equal(j.c.body.status, 'paid');
   assert.equal(await access(V, 'v@example.test', 'pride'), true);
   assert.equal(await access(V, 'v@example.test', 'oz'), false, '월 구독에는 오즈·어린 왕자가 없다');
+  assert.equal((await gateBooks('v@example.test')).length, 8, '강의 서버용 목록: 월 8권');
   const c = await api(V, 'cancel');
   assert.equal(c.body.ok, true);
   await db.exec(`update public.class_subscriptions set next_charge_at = now() - interval '1 minute' where user_id = '${V}'`); // 누가 되살려도
