@@ -12,6 +12,8 @@ const db = new PGlite();
 const U = '00000000-0000-4000-8000-0000000000a1'; // 키다리 1권 소장 → 연간 개인
 const V = '00000000-0000-4000-8000-0000000000b2'; // 소장 없음 → 월 함께 읽기
 const W = '00000000-0000-4000-8000-0000000000c3'; // 구독 안 함(대조군)
+const P = '00000000-0000-4000-8000-0000000000d4'; // 포인트 5,000P 보유 → 함께 읽기 연간을 포인트 + 카드로
+const PM = '00000000-0000-4000-8000-0000000000e5'; // P 의 회원 행(public.users.id — 포인트 원장은 이 id 를 쓴다)
 
 // ── 운영 DB 에 이미 있는 것들의 최소 모형(함수 본문은 2026-11-12 운영 정의를 그대로 옮김) ──
 await db.exec(`
@@ -77,7 +79,16 @@ begin
     'newBuyer',v_n=0,'theoryIncluded',v_theory,
     'existingRequest',v_blocked);
 end $fn$;
-  insert into auth.users(id, email) values ('${U}', 'u@example.test'), ('${V}', 'v@example.test'), ('${W}', 'w@example.test');
+  insert into auth.users(id, email) values ('${U}', 'u@example.test'), ('${V}', 'v@example.test'), ('${W}', 'w@example.test'), ('${P}', 'p@example.test');
+  -- 포인트 원장(운영 제약 그대로: 사유 목록에 구독이 없고 한 줄 한도 3,000P — 포인트 초안이 넓힌다)
+  create table public.users(id uuid primary key, auth_uid uuid);
+  create table public.point_transactions(id bigserial primary key, user_id uuid not null references public.users(id), season_id text,
+    amount integer not null, reason text not null, ref_id text, memo text, created_at timestamptz not null default now(),
+    unique (user_id, reason, ref_id),
+    constraint point_tx_amount_range check (amount >= -3000 and amount <= 3000 and amount <> 0),
+    constraint point_tx_reason_whitelist check (reason = any (array['checkin','adjust','spend_extension','signup'])));
+  insert into public.users values ('${PM}', '${P}');
+  insert into public.point_transactions(user_id, amount, reason, ref_id) values ('${PM}', 3000, 'adjust', 'seed1'), ('${PM}', 2000, 'adjust', 'seed2');
   insert into public.class_verifications values ('u@example.test', 'kidari');
 `);
 await db.exec(await readFile(new URL('./supabase/migrations/20261112100000_class_subscription_billing.sql', import.meta.url), 'utf8'));
@@ -87,6 +98,9 @@ await db.exec(await readFile(new URL('./supabase/migrations/20261112120000_class
 const gateBooks = async (email) => (await db.query(`select public.class_subscription_books_by_email('${email}') as v`)).rows[0].v;
 // 한 번 더 돌려도 된다(이미 들어간 한 줄은 건너뛴다)
 await db.exec(await readFile(new URL('./supabase/migrations/20261112100000_class_subscription_billing.sql', import.meta.url), 'utf8'));
+// 포인트 초안은 맨 뒤에(예전 8칸짜리 가입 함수를 지우고 9칸짜리로 바꾼다) · 두 번 돌려도 된다
+const POINTS = await readFile(new URL('./supabase/migrations/20261113090000_class_subscription_points.sql', import.meta.url), 'utf8');
+await db.exec(POINTS); await db.exec(POINTS);
 
 // ── 서버가 쓰는 DB 통로(PostgREST 흉내) ──
 const lit = (v) => (v === null || v === undefined ? 'null' : typeof v === 'number' ? String(v) : `'${String(v).replace(/'/g, "''")}'`);
@@ -106,15 +120,16 @@ const sbFetch = async (_env, path, init = {}) => {
 };
 
 // ── 가짜 토스 ──
-const toss = { payments: new Map(), charges: 0, decline: false };
+const toss = { payments: new Map(), charges: 0, decline: false, unclear: false, lastAmount: null };
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url); const body = init.body ? JSON.parse(init.body) : {};
   if (u.endsWith('/billing/authorizations/issue')) return json({ billingKey: `bk_${body.customerKey}` });
   if (u.includes('/billing/')) {
     if (toss.decline) return json({ code: 'REJECT_CARD_COMPANY' }, 400);
+    if (toss.unclear) return json({ code: 'PROVIDER_ERROR' }, 500);
     const prev = [...toss.payments.values()].find((x) => x.orderId === body.orderId);
     if (prev) return json({ code: 'ALREADY_PROCESSED_PAYMENT', paymentKey: prev.paymentKey }, 400);
-    toss.charges++;
+    toss.charges++; toss.lastAmount = body.amount;
     const pay = { paymentKey: `pk_${toss.charges}`, orderId: body.orderId, totalAmount: body.amount, balanceAmount: body.amount, currency: 'KRW', status: 'DONE' };
     toss.payments.set(pay.paymentKey, pay);
     return json(pay);
@@ -273,6 +288,100 @@ await check('전액 취소(환불) 웹훅: 토스에 다시 물어 반영하고 
   assert.equal(r.status, 200);
   assert.equal((await sub(V)).status, 'canceled');
   assert.equal(await access(V, 'v@example.test', 'oz'), false);
+});
+
+// ── 구독료의 30%까지 포인트(1P = 10원) — 첫 결제에만 ──
+const balance = async () => (await db.query(`select coalesce(sum(amount),0)::int as b from public.point_transactions where user_id = '${PM}'`)).rows[0].b;
+const terms = { acceptedTermsVersion: 'sub-2026-12' };
+
+await check('견적: 쓸 수 있는 포인트 = 구독료의 30%와 가진 포인트 중 작은 쪽', async () => {
+  const solo = (await api(P, 'quote', { plan: 'solo', cycle: 'year' })).body;
+  assert.equal(solo.pointsBalance, 5000); assert.equal(solo.pointsMax, 2970);
+  const tog = (await api(P, 'quote', { plan: 'together', cycle: 'year' })).body;
+  assert.equal(tog.pointsMax, 4470);
+  assert.equal((await api(W, 'quote', { plan: 'solo', cycle: 'year' })).body.pointsMax, 0, '포인트가 없는 회원은 0');
+});
+
+await check('주문: 한도를 넘거나 모자라면 주문을 만들지 않는다', async () => {
+  assert.equal((await api(P, 'prepare', { plan: 'solo', cycle: 'year', expectedAmount: 99000, usePoints: 2971, ...terms })).body.error, 'bad_points');
+  assert.equal((await api(P, 'prepare', { plan: 'solo', cycle: 'year', expectedAmount: 99000, usePoints: -10, ...terms })).body.error, 'bad_points');
+  assert.equal((await api(P, 'prepare', { plan: 'solo', cycle: 'year', expectedAmount: 99000, usePoints: 1.5, ...terms })).body.error, 'bad_points');
+  assert.equal((await api(W, 'prepare', { plan: 'solo', cycle: 'year', expectedAmount: 99000, usePoints: 10, ...terms })).body.error, 'points_short');
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscriptions where user_id in ('${P}','${W}')`)).rows[0].c, 0);
+});
+
+await check('주문 뒤에 포인트를 다른 데 써서 모자라면 카드를 청구하지 않는다(돈이 나가지 않는다)', async () => {
+  const p = await api(P, 'prepare', { plan: 'together', cycle: 'year', expectedAmount: 149000, usePoints: 4470, ...terms });
+  await db.exec(`insert into public.point_transactions(user_id, amount, reason, ref_id) values ('${PM}', -3000, 'adjust', 'drain')`);
+  const before = toss.charges;
+  const c = await api(P, 'confirm', { orderId: p.body.orderId, authKey: 'auth' });
+  assert.equal(c.status, 409); assert.equal(c.body.error, 'points_short');
+  assert.equal(toss.charges, before); assert.equal(await balance(), 2000);
+  await db.exec(`delete from public.point_transactions where ref_id = 'drain'`);
+});
+
+let pOrder;
+await check('카드가 거절되면 포인트를 돌려놓는다(카드 금액 = 149,000 − 4,470P × 10)', async () => {
+  const p = await api(P, 'prepare', { plan: 'together', cycle: 'year', expectedAmount: 149000, usePoints: 4470, ...terms });
+  assert.equal(p.body.cardAmount, 104300); assert.equal(p.body.usePoints, 4470);
+  assert.equal(await balance(), 5000, '주문만 만들고는 차감하지 않는다');
+  toss.decline = true;
+  const c = await api(P, 'confirm', { orderId: p.body.orderId, authKey: 'auth' });
+  toss.decline = false;
+  assert.equal(c.status, 402); assert.equal(await balance(), 5000);
+  assert.equal((await sub(P)).status, 'pending');
+});
+
+await check('결과가 애매하면 포인트를 잡은 채 기다린다 · 그동안 새 주문을 만들지 않는다 · 다시 물으면 한 번만 결제', async () => {
+  const p = await api(P, 'prepare', { plan: 'together', cycle: 'year', expectedAmount: 149000, usePoints: 4470, ...terms });
+  pOrder = p.body.orderId;
+  const before = toss.charges;
+  toss.unclear = true;
+  const c = await api(P, 'confirm', { orderId: pOrder, authKey: 'auth' });
+  toss.unclear = false;
+  assert.equal(c.status, 202); assert.equal(await balance(), 530, '잡은 채');
+  assert.equal((await api(P, 'prepare', { plan: 'solo', cycle: 'month', expectedAmount: 9900, ...terms })).body.error, 'payment_pending');
+  const again = await api(P, 'confirm', { orderId: pOrder, authKey: 'auth' });
+  assert.equal(again.body.status, 'paid'); assert.equal(toss.charges, before + 1); assert.equal(toss.lastAmount, 104300);
+  assert.equal(await balance(), 530, '두 번 차감하지 않는다');
+  await api(P, 'confirm', { orderId: pOrder, authKey: 'auth' });
+  assert.equal(await balance(), 530); assert.equal(toss.charges, before + 1);
+});
+
+await check('원장 한 줄: −4,470P · 사유 subscription · 주문 번호로 묶인다 · 구독 금액(다음 결제)은 149,000원 그대로', async () => {
+  const row = (await db.query(`select amount, reason, ref_id from public.point_transactions where user_id = '${PM}' and reason = 'subscription'`)).rows;
+  assert.deepEqual(row, [{ amount: -4470, reason: 'subscription', ref_id: `sub_pay:${pOrder}` }]);
+  const s = await sub(P);
+  assert.equal(s.status, 'active'); assert.equal(s.amount, 149000);
+  assert.equal(await access(P, 'p@example.test', 'anne'), true);
+});
+
+await check('전환 차감은 카드로 낸 금액만 센다(포인트 몫 제외)', async () => {
+  const st = (await api(P, 'status')).body;
+  assert.equal(st.conversion.paidTotal, 104300); assert.equal(st.conversion.amount, 398000 - 104300);
+});
+
+await check('자동 갱신에는 포인트를 쓰지 않는다 — 149,000원 전액 카드', async () => {
+  await db.exec(`update public.class_subscriptions set current_period_end = now() - interval '1 minute', next_charge_at = now() - interval '1 minute' where user_id = '${P}'`);
+  const out = await chargeDueSubscriptions(ENV, { sbFetch });
+  assert.equal(out.paid, 1); assert.equal(toss.lastAmount, 149000); assert.equal(await balance(), 530);
+});
+
+await check('회원은 포인트 함수를 직접 못 부른다 · 결제된 주문의 포인트는 돌려놓지 않는다', async () => {
+  await db.exec('set role authenticated;');
+  await assert.rejects(db.query(`select public.class_subscription_points_reserve('${pOrder}')`), /permission denied/);
+  await assert.rejects(db.query(`select public.class_subscription_points_release('${pOrder}')`), /permission denied/);
+  await db.exec('reset role;');
+  assert.equal((await db.query(`select public.class_subscription_points_release('${pOrder}') as v`)).rows[0].v.error, 'order_paid');
+  assert.equal(await balance(), 530);
+});
+
+await check('첫 결제가 전액 취소(환불)되면 쓴 포인트를 돌려준다', async () => {
+  const pay = (await db.query(`select payment_key from public.class_subscription_payments where id = '${pOrder}'`)).rows[0];
+  const t = toss.payments.get(pay.payment_key); t.status = 'CANCELED'; t.balanceAmount = 0;
+  const deps = { requireUser: async () => null, sbFetch, json };
+  const r = await classSubscription(new Request('https://x/api/class-subscription/webhook', { method: 'POST', body: JSON.stringify({ data: { paymentKey: pay.payment_key, orderId: pOrder } }) }), ENV, {}, 'webhook', deps);
+  assert.equal(r.status, 200); assert.equal(await balance(), 5000);
 });
 
 console.log(`class-subscription-db-test: ${n} checks passed (토스 청구 ${toss.charges}회)`);

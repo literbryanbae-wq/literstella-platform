@@ -69,4 +69,19 @@ check('전환: 기한이 지나면 닫힌다(차감 0)', () => {
   assert.equal(q.amount, 398000);
 });
 
+{
+  // 첫 결제 포인트: 30% 한도 · 가진 만큼 · 정수만 · 0 이면 전액 카드
+  const { pointsPlan } = await import('./src/class-subscription-pricing.mjs');
+  const q = subscriptionQuote({ plan: 'solo', cycle: 'year' });
+  assert.equal(q.pointsMax, 2970);
+  assert.deepEqual(pointsPlan(q, 0, 5000), { ok: true, usePoints: 0, cardAmount: 99000 });
+  assert.deepEqual(pointsPlan(q, undefined, 0), { ok: true, usePoints: 0, cardAmount: 99000 });
+  assert.deepEqual(pointsPlan(q, 2970, 5000), { ok: true, usePoints: 2970, cardAmount: 69300 });
+  assert.equal(pointsPlan(q, 2971, 5000).error, 'bad_points');
+  assert.equal(pointsPlan(q, 10.5, 5000).error, 'bad_points');
+  assert.equal(pointsPlan(q, '10', 5000).error, 'bad_points');
+  assert.equal(pointsPlan(q, 100, 99).error, 'points_short');
+  assert.equal(pointsPlan({ ok: false }, 10, 99).error, 'bad_plan');
+  n++;
+}
 console.log(`class-subscription-pricing-test: ${n} checks passed`);

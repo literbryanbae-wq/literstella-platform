@@ -2,7 +2,7 @@
 //   🔴 아직 진입 모듈에 연결하지 않았다(미배포). 여는 순서 = LIVE-SOURCE.md '구독 결제' 절.
 //   금액은 서버가 정한다(class-subscription-pricing.mjs). 화면이 보낸 금액은 '같은지'만 본다.
 //   카드 정보는 이 서버를 지나가지 않는다 — 토스 창이 authKey 를 주고, 서버가 그것으로 빌링키를 받는다.
-import { subscriptionQuote, conversionQuote } from './class-subscription-pricing.mjs';
+import { subscriptionQuote, conversionQuote, pointsPlan } from './class-subscription-pricing.mjs';
 
 const TOSS = 'https://api.tosspayments.com/v1';
 const ORDER_ID = /^sub[a-f0-9]{32}$/;
@@ -66,6 +66,8 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       const [row] = await t.rows(`class_subscription_payments?id=eq.${id}&select=id,amount,payment_key&limit=1`);
       if (!row || (row.payment_key && row.payment_key !== key)) return reply({ ok: true, ignored: true });
       const result = await t.settle(await t.getPayment(key), id, row.amount); // 웹훅 본문은 믿지 않고 토스에 다시 묻는다
+      // 전액 취소(환불)된 주문에 쓴 포인트는 돌려놓는다. 실패하면 503 — 토스가 웹훅을 다시 보낸다.
+      if (result.ok && result.status === 'canceled') await t.rpc('points_release', { p_order_id: id });
       return reply(result, result.ok ? 200 : 503);
     }
     const user = await requireUser(req, env);
@@ -75,6 +77,7 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     const enabled = env.CLASS_SUBSCRIPTION_ENABLED === 'true' && !!env.TOSS_BILLING_SECRET_KEY && !!env.TOSS_BILLING_CLIENT_KEY && !!tm;
     const summary = await t.rpc('summary', { p_user_id: user.id });
     const owned = Number(summary?.ownedOriginals) || 0;
+    const balance = Math.max(0, Number(summary?.pointsBalance) || 0);
     const b = action === 'status' ? {} : await req.json().catch(() => ({}));
 
     if (action === 'status') {
@@ -93,7 +96,7 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     const q = subscriptionQuote({ plan: b.plan, cycle: b.cycle, ownedCount: owned });
     if (action === 'quote') {
       if (!q.ok) return reply(q, 400);
-      return reply({ ...q, ownedCount: owned, terms: tm, checkoutEnabled: enabled, subscription: summary?.subscription || null,
+      return reply({ ...q, pointsMax: Math.min(q.pointsMax, balance), pointsBalance: balance, ownedCount: owned, terms: tm, checkoutEnabled: enabled, subscription: summary?.subscription || null,
         clientKey: enabled ? env.TOSS_BILLING_CLIENT_KEY : null });
     }
     if (!enabled) return reply({ ok: false, error: 'checkout_closed' }, 503);
@@ -101,13 +104,15 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       if (!q.ok) return reply(q, 400);
       if (b.acceptedTermsVersion !== tm.version) return reply({ ok: false, error: 'terms_changed' }, 409);
       if (b.expectedAmount !== q.amount) return reply({ ok: false, error: 'amount_mismatch', amount: q.amount }, 409);
+      const pts = pointsPlan(q, b.usePoints, balance);
+      if (!pts.ok) return reply({ ...pts, balance }, pts.error === 'points_short' ? 409 : 400);
       const r = await t.rpc('begin', { p_user_id: user.id, p_plan: b.plan, p_cycle: b.cycle, p_amount: q.amount,
-        p_list_amount: q.listAmount, p_owned_count: owned, p_terms_version: tm.version, p_terms_url: tm.url });
+        p_list_amount: q.listAmount, p_owned_count: owned, p_terms_version: tm.version, p_terms_url: tm.url, p_points: pts.usePoints });
       return reply(r.ok ? { ...r, clientKey: env.TOSS_BILLING_CLIENT_KEY } : r, r.ok ? 200 : 409);
     }
     // confirm — 토스 카드 등록 창이 돌려준 authKey 로 빌링키를 받고 첫 결제를 한다.
     if (!ORDER_ID.test(b.orderId || '') || typeof b.authKey !== 'string' || !b.authKey || b.authKey.length > 300) return reply({ ok: false, error: 'bad_request' }, 400);
-    const [pay] = await t.rows(`class_subscription_payments?id=eq.${b.orderId}&user_id=eq.${user.id}&select=id,amount,status,payment_key,subscription_id&limit=1`);
+    const [pay] = await t.rows(`class_subscription_payments?id=eq.${b.orderId}&user_id=eq.${user.id}&select=id,amount,status,payment_key,subscription_id,points_used&limit=1`);
     if (!pay) return reply({ ok: false, error: 'order_not_found' }, 404);
     if (pay.status === 'paid') return reply({ ok: true, status: 'paid', orderId: pay.id });
     if (pay.status !== 'ready') return reply({ ok: false, error: 'order_closed' }, 409);
@@ -122,11 +127,17 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       billingKey = issued.billingKey;
       await t.rpc('attach_key', { p_subscription_id: sub.id, p_billing_key: billingKey });
     }
+    // 포인트는 카드 청구 직전에 차감한다 — 모자라면 카드를 청구하지 않는다(돈이 나가지 않는다).
+    if (pay.points_used > 0) {
+      const held = await t.rpc('points_reserve', { p_order_id: pay.id });
+      if (!held.ok) return reply({ ok: false, error: held.error || 'points_short' }, 409);
+    }
     const res = await t.charge({ billingKey, customerKey: sub.customer_key, orderId: pay.id, amount: pay.amount, orderName: orderName(sub.plan, sub.cycle) });
     if (!res.ok && res.pay.code !== 'ALREADY_PROCESSED_PAYMENT') {
       // 거절이 분명할 때만 실패로 적는다. 애매하면 그대로 두고(두 번 청구 금지) 화면이 status 로 다시 묻는다.
       if (res.pay.code && !/TIMEOUT|UNKNOWN|PROVIDER_ERROR|FAILED_INTERNAL/.test(res.pay.code)) {
         await t.rpc('fail', { p_order_id: pay.id, p_code: res.pay.code });
+        if (pay.points_used > 0) await t.rpc('points_release', { p_order_id: pay.id }); // 거절이 분명하니 포인트를 돌려놓는다
         return reply({ ok: false, error: 'card_declined' }, 402);
       }
       return reply({ ok: false, error: 'payment_pending' }, 202);

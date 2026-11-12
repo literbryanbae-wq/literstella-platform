@@ -34,6 +34,18 @@ export function subscriptionQuote({ plan, cycle, ownedCount = 0 } = {}) {
   };
 }
 
+/**
+ * 첫 결제에 쓸 포인트(1P = 10원). 구독 금액의 30%까지 · 가진 만큼만. 다음 자동 결제에는 쓰지 않는다.
+ *   usePoints 가 없거나 0 이면 포인트 없이 전액 카드.
+ */
+export function pointsPlan(quote, usePoints, balance = 0) {
+  if (!quote?.ok) return { ok: false, error: 'bad_plan' };
+  if (usePoints === undefined || usePoints === null || usePoints === 0) return { ok: true, usePoints: 0, cardAmount: quote.amount };
+  if (!Number.isInteger(usePoints) || usePoints < 0 || usePoints > quote.pointsMax) return { ok: false, error: 'bad_points' };
+  if (usePoints > Math.max(0, Math.trunc(Number(balance) || 0))) return { ok: false, error: 'points_short' };
+  return { ok: true, usePoints, cardAmount: quote.amount - usePoints * 10 };
+}
+
 /** 다음 결제일 — 같은 날짜(말일은 그 달 말일로). ISO 문자열을 받고 돌려준다. */
 export function nextPeriodEnd(startIso, cycle) {
   const d = new Date(startIso);
