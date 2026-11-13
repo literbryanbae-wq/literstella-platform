@@ -32,6 +32,7 @@ export const PASSTHROUGH_MODULES = Object.freeze([
   'class-subscription-entry.mjs',
   'class-subscription.mjs',
   'class-subscription-pricing.mjs',
+  'class-subscription-email.mjs', // 2026-11-14 구독 안내 메일(스위치 CLASS_SUBSCRIPTION_MAIL_ENABLED)
 ]);
 
 const root = fileURLToPath(new URL('..', import.meta.url));
