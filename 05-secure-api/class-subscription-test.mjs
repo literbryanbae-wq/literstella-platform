@@ -7,7 +7,7 @@ const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(d
 const ENV = { CLASS_SUBSCRIPTION_ENABLED: 'true', TOSS_BILLING_SECRET_KEY: 'sk', TOSS_BILLING_CLIENT_KEY: 'ck',
   CLASS_SUBSCRIPTION_TERMS_URL: 'https://class-new.literstella.co.kr/subscribe#terms', CLASS_SUBSCRIPTION_TERMS_VERSION: 'sub-2026-12' };
 
-function world({ owned = 0, ownedTheory = false, payStatus = 'ready', billingKey = null, payments = [], toss = {}, kind = 'first' } = {}) {
+function world({ owned = 0, ownedTheory = false, payStatus = 'ready', billingKey = null, payments = [], toss = {}, kind = 'first', monthly = null } = {}) {
   const calls = { rpc: [], toss: [] };
   const sbFetch = async (_env, path, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
@@ -20,6 +20,8 @@ function world({ owned = 0, ownedTheory = false, payStatus = 'ready', billingKey
       if (name === 'class_subscription_due') return json([{ orderId: ORDER, subscriptionId: 's1', userId: 'u1', billingKey: 'bk', customerKey: 'cus1', amount: 9900, plan: 'solo', cycle: 'month' }]);
       if (name === 'class_subscription_expire') return json(2);
       if (name === 'class_checkout_quote') return json({ ok: true, ownedCount: owned, complete: false });
+      if (name === 'class_subscription_upgrade_quote') return json(monthly ? { ok: true, plan: monthly, credit: 7400, pointsUsedThisPeriod: 0, daysLeft: 10 } : { ok: false, error: 'no_monthly_subscription' });
+      if (name === 'class_subscription_upgrade_begin') return json({ ok: true, orderId: ORDER, billingKey: 'bk', customerKey: 'cus1', cardAmount: body.p_amount - 7400, credit: 7400, usePoints: 0 });
       return json({ ok: true });
     }
     if (path.startsWith('class_subscription_payments')) return json([{ id: ORDER, amount: 99000, status: payStatus, payment_key: null, subscription_id: 's1' }]);
@@ -136,6 +138,23 @@ await check('내 서재 상태: 낸 구독료만큼 올인원 전환가에서 �
     assert.equal(r.body.conversion.basePrice, 348000);
     assert.equal(r.body.conversion.amount, 249000);
   } finally { globalThis.Date = RealDate; Date.now = realNow; }
+});
+
+await check('월 → 연간 전환은 지금 요금제로만: 함께 읽기 월 = 함께 읽기 연간 · plan 을 바꿔 보내면 409 plan_fixed(청구 0) · plan 없이 = 기존과 같다', async () => {
+  const w = world({ monthly: 'together', toss: { total: 141600 } });
+  const q = await w.call('upgrade-quote', {});
+  assert.equal(q.status, 200); assert.equal(q.body.plan, 'together'); assert.equal(q.body.amount, 149000); assert.equal(q.body.payAmount, 141600);
+  const fixedQ = await w.call('upgrade-quote', { plan: 'solo' });
+  assert.equal(fixedQ.status, 409); assert.deepEqual(fixedQ.body, { ok: false, error: 'plan_fixed' });
+  const fixed = await w.call('upgrade', { plan: 'solo', expectedAmount: 91600, acceptedTermsVersion: 'sub-2026-12' });
+  assert.equal(fixed.status, 409); assert.equal(fixed.body.error, 'plan_fixed');
+  assert.equal(w.calls.toss.length, 0, '청구 0');
+  assert.ok(!w.calls.rpc.some(([k]) => k === 'class_subscription_upgrade_begin'), '전환 주문도 안 만든다');
+  const ok = await w.call('upgrade', { expectedAmount: 141600, acceptedTermsVersion: 'sub-2026-12' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(w.calls.rpc.find(([k]) => k === 'class_subscription_upgrade_begin')[1].p_plan, 'together');
+  const same = await world({ monthly: 'together', toss: { total: 141600 } }).call('upgrade', { plan: 'together', expectedAmount: 141600, acceptedTermsVersion: 'sub-2026-12' });
+  assert.equal(same.status, 200, '같은 요금제를 적어 보내면 된다');
 });
 
 await check('크론: 청구하고 정리 숫자를 돌려준다 · 스위치가 꺼져 있으면 아무것도 안 한다', async () => {

@@ -113,11 +113,15 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     }
     if (action === 'upgrade-quote' || action === 'upgrade') {
       // 월 → 연간 전환: 이번 달 남은 날짜만큼 빼고, 등록된 카드로 바로 청구한다(운영자 2026-11-13).
-      const plan = b.plan || summary?.subscription?.plan;
-      const yq = subscriptionQuote({ plan, cycle: 'year', ownedCount: owned, ownedTheory });
-      if (!yq.ok) return reply(yq, 400);
+      //   🔴 요금제는 지금 월 구독의 것 그대로(운영자 2026-11-13) — 화면이 보낸 plan 은 믿지 않는다.
+      //   함께 읽기 → 개인으로 바꾸면 초대받은 분들의 자리가 그 순간 닫힌다. 다른 plan 을 보내면 409 plan_fixed(청구 0).
+      //   upgrade_begin(DB, 운영 적용됨)은 p_plan 을 그대로 받으므로 막는 곳은 여기 한 곳이다(service_role 전용 RPC).
       const uq = await t.rpc('upgrade_quote', { p_user_id: user.id });
       if (!uq.ok) return reply(uq, 409);
+      const plan = uq.plan || summary?.subscription?.plan;
+      if (b.plan !== undefined && b.plan !== null && b.plan !== '' && b.plan !== plan) return reply({ ok: false, error: 'plan_fixed' }, 409);
+      const yq = subscriptionQuote({ plan, cycle: 'year', ownedCount: owned, ownedTheory });
+      if (!yq.ok) return reply(yq, 400);
       const pointsMax = Math.min(Math.max(0, yq.pointsMax - (Number(uq.pointsUsedThisPeriod) || 0)), balance);
       const view = { ok: true, plan, cycle: 'year', listAmount: yq.listAmount, amount: yq.amount, ownedDiscount: yq.ownedDiscount, ownedCount: yq.discountBooks, ...owns,
         credit: uq.credit, daysLeft: uq.daysLeft, payAmount: yq.amount - uq.credit, pointsMax, pointsBalance: balance, terms: tm, checkoutEnabled: enabled };

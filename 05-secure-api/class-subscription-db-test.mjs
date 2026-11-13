@@ -468,6 +468,35 @@ await check('회원은 전환·선물 함수를 직접 못 부른다', async () 
   } finally { await db.exec('reset role;'); }
 });
 
+// ── 2026-11-13: 월 → 연간 전환은 같은 요금제로만(함께 읽기 → 개인으로 바꾸면 초대받은 분들의 자리가 닫힌다) ──
+const TM = '00000000-0000-4000-8000-0000000000d1';
+await db.exec(`insert into auth.users(id, email) values ('${TM}', 'tm@example.test')`);
+const halfMonthOf = async (uid) => db.exec(`update public.class_subscription_payments set period_start = now() - interval '10 days', period_end = now() + interval '10 days' where user_id = '${uid}' and status = 'paid';
+  update public.class_subscriptions set current_period_start = (select period_start from public.class_subscription_payments where user_id = '${uid}' and status = 'paid'),
+    current_period_end = (select period_end from public.class_subscription_payments where user_id = '${uid}' and status = 'paid') where user_id = '${uid}'`);
+await check('전환: 함께 읽기 월 구독자는 함께 읽기 연간으로만 · 다른 요금제를 보내면 409 plan_fixed · 청구 0', async () => {
+  const j = await join(TM, 'together', 'month');
+  assert.equal(j.c.body.status, 'paid');
+  await halfMonthOf(TM);
+  const q = (await api(TM, 'upgrade-quote', {})).body;
+  // 함께 읽기 연간 149,000 − 남은 날짜 값어치 floor(14,900/2/100)*100 = 7,400 → 141,600
+  assert.equal(q.ok, true, JSON.stringify(q)); assert.equal(q.plan, 'together'); assert.equal(q.amount, 149000); assert.equal(q.credit, 7400); assert.equal(q.payAmount, 141600);
+  const qs = await api(TM, 'upgrade-quote', { plan: 'solo' });
+  assert.equal(qs.status, 409); assert.equal(qs.body.error, 'plan_fixed');
+  const charges = toss.charges;
+  const solo = await api(TM, 'upgrade', { plan: 'solo', expectedAmount: 94100, ...terms });
+  assert.equal(solo.status, 409); assert.equal(solo.body.error, 'plan_fixed');
+  const solo2 = await api(TM, 'upgrade', { plan: 'solo', expectedAmount: 141600, ...terms });
+  assert.equal(solo2.body.error, 'plan_fixed', '금액을 맞춰 보내도 요금제는 못 바꾼다');
+  assert.equal(toss.charges, charges, '청구 0');
+  assert.equal((await db.query(`select count(*)::int n from public.class_subscription_payments where user_id = '${TM}' and kind = 'upgrade'`)).rows[0].n, 0, '전환 주문도 안 만든다');
+  const s0 = await sub(TM); assert.equal(s0.plan, 'together'); assert.equal(s0.cycle, 'month');
+  // 같은 요금제를 적어 보내면 된다 · plan 없이 보내도 된다(기존과 같다)
+  const r = await api(TM, 'upgrade', { plan: 'together', expectedAmount: 141600, ...terms });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(toss.lastAmount, 141600); assert.equal(toss.charges, charges + 1);
+  const s = await sub(TM); assert.equal(s.plan, 'together'); assert.equal(s.cycle, 'year'); assert.equal(s.amount, 149000);
+});
+
 // ── 2026-11-13 A: 구독 할인에 핵심 이론을 소장으로 센다(올인원 결제와 같은 규칙) ──
 const O2 = '00000000-0000-4000-8000-0000000000b8'; // 오리지널 2권(키다리·앤) → 이론 자동 포함 → 3/9
 const OT = '00000000-0000-4000-8000-0000000000b9'; // 이론만 실제로 소장 → 1/9

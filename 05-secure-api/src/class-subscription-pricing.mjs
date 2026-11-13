@@ -85,10 +85,15 @@ export function conversionQuote({ ownedCount = 0, payments = [], now = new Date(
   const credited = (Array.isArray(payments) ? payments : [])
     .filter((p) => p && p.paidAt && kstDay(p.paidAt) <= CONVERSION_DEADLINE)
     .reduce((sum, p) => sum + Math.max(0, (Number(p.amount) || 0) - (Number(p.canceledAmount) || 0)), 0);
-  const credit = open ? Math.min(base, credited) : 0;
+  let credit = open ? Math.min(base, credited) : 0;
+  // 차감 뒤 1~999원 자투리는 회사가 부담해 0원(토스 결제가 안 될 수 있다 · 운영자 2026-11-13).
+  //   DB class_checkout_quote 와 같은 규칙 — 구독 차감이 있는 회원만. 올린 금액은 roundedDown(차감 줄에 포함된다).
+  const left = base - credit;
+  const roundedDown = credit > 0 && left >= 1 && left <= 999 ? left : 0;
+  credit += roundedDown;
   return {
     ok: true, open, deadline: CONVERSION_DEADLINE, ownedCount: ownedN(ownedCount),
-    basePrice: base, paidTotal: credited, credit, amount: base - credit,
+    basePrice: base, paidTotal: credited, credit, amount: base - credit, roundedDown,
     steps: [
       { label: '올인원 8종 소장', amount: ALLINONE_FULL_PRICE },
       { label: `이미 소장한 ${ownedN(ownedCount)}권`, amount: -(ALLINONE_FULL_PRICE - base) },

@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { classMemberCheckout } from './src/class-member-checkout.mjs';
 import { renderCheckoutEmail, freePaymentRecord } from './src/class-checkout-email.mjs';
+import { conversionQuote } from './src/class-subscription-pricing.mjs';
 
 const ENTRY = process.env.PGLITE_MODULE || process.env.PGLITE_ENTRY;
 if (!ENTRY) { console.log('class-checkout-low-free-test: PGLITE_MODULE 가 없어 건너뜀'); process.exit(0); }
@@ -157,8 +158,9 @@ try {
   check((await rpc('class_checkout_claim', [low.id, o.orderId, 'key-low', lowAmount])).ok);
   check((await rpc('class_checkout_settle', [o.orderId, 'key-low', lowAmount, 'DONE'])).granted);
   check((await db.query(`select 1 from class_verifications where email=$1 and book_code='sherlock'`, [low.email])).rows.length === 1);
-  // 상한 348,000 은 그대로 — 소장 0권(newBuyer) 398,000 주문은 여전히 제약에 막힌다(판매 결정 전까지 열지 않는다)
-  await assert.rejects(prepare(await member([]), 398000), /class_checkout_orders_amount_check/); checks++;
+  // 소장 0권(newBuyer) 398,000 도 이제 만들어진다(운영자 2026-11-13: 올인원 결제는 원래 되는 것)
+  const nb = await prepare(await member([]), 398000);
+  check(nb.ok && nb.amount === 398000 && nb.orderName === '리터스텔라 올인원 8개 평생소장', JSON.stringify(nb));
   // 단품 강좌 하한은 그대로
   await assert.rejects(db.query(`insert into class_checkout_orders(id,user_id,email,product_code,amount,owned_books,missing_books,terms_version,terms_url)
     values('clsbadcourse',$1,'x@example.test','class-kidari-lifetime',100,'{}','{kidari}','v','u')`, [low.id]), /amount_check/); checks++;
@@ -201,6 +203,45 @@ try {
     const lowMail = renderCheckoutEmail(lowRow, { approvedAt: '2026-11-13T10:00:00+09:00', method: '카드' }, 'member', mailEnv);
     check(lowMail.html.includes('350,000원') && lowMail.html.includes('9,900원') && !lowMail.html.includes('359,900원'), lowMail.text);
   }
+
+  // ── (ii-b) 구독료 차감 뒤 1~999원 자투리 = 회사 부담 0원(운영자 2026-11-13) · conversionQuote 도 같은 답 ──
+  check((await db.query(`select count(*)::int n from pg_proc where proname='class_checkout_quote' and prosrc like '%roundedDown%'`)).rows[0].n === 1, 'quote 패치 1번만');
+  // 구독 차감이 있는 회원만 — 조건이 정의에 남아 있는지(소장 할인만으로는 1~999 가 나올 수 없어 동작으로는 못 잰다)
+  check((await db.query(`select prosrc from pg_proc where proname='class_checkout_quote'`)).rows[0].prosrc.includes('if v_sub > 0 and greatest(398000-v_n*50000,0)-v_sub between 1 and 999 then'), '구독 차감 0 회원 제외 조건');
+  if (creditOpen) {
+    // 6권 + 이론 = 48,000 · 낸 구독료 47,500 → 500원 남음 → 0원
+    const r5 = await member(SIX, 47500);
+    const q5 = await rpc('class_checkout_quote', [r5.id]);
+    check(q5.amount === 0 && q5.roundedDown === 500 && q5.subscriptionCredit === 48000 && q5.eligible, JSON.stringify(q5));
+    const cq5 = conversionQuote({ ownedCount: q5.ownedCount, payments: [{ amount: 47500, paidAt: new Date().toISOString(), canceledAmount: 0 }] });
+    check(cq5.amount === 0 && cq5.roundedDown === 500 && cq5.credit === 48000, JSON.stringify(cq5));
+    check((await prepare(r5, 0)).error === 'use_free');
+    const g5 = await free(r5);
+    check(g5.ok && g5.free && g5.granted && g5.roundedDown === 500 && g5.subscriptionCredit === 48000 && g5.grantedBooks.join() === 'sherlock', JSON.stringify(g5));
+    const row5 = (await db.query(`select * from class_checkout_orders where id=$1`, [g5.orderId])).rows[0];
+    check(row5.amount === 0 && row5.status === 'paid' && row5.payment_key === null);
+    const mail5 = renderCheckoutEmail({ ...row5, updated_at: new Date(row5.updated_at).toISOString() }, freePaymentRecord(row5), 'member',
+      { RESEND_FROM: 'LiterStella <mail@example.test>', ADMIN_EMAIL: 'admin@example.test' });
+    check(mail5.text.includes('구독료 차감: 48,000원') && mail5.text.includes('기존 소장 할인: 350,000원') && !mail5.text.includes('47,500원'), mail5.text);
+    // 999원 남음 → 0원 · 1,000원 남음 → 그대로 1,000원
+    const r9 = await member(SIX, 47001);
+    const q9 = await rpc('class_checkout_quote', [r9.id]);
+    check(q9.amount === 0 && q9.roundedDown === 999 && q9.subscriptionCredit === 48000, JSON.stringify(q9));
+    const r10 = await member(SIX, 47000);
+    const q10 = await rpc('class_checkout_quote', [r10.id]);
+    check(q10.amount === 1000 && q10.roundedDown === 0 && q10.subscriptionCredit === 47000, JSON.stringify(q10));
+    const cq10 = conversionQuote({ ownedCount: q10.ownedCount, payments: [{ amount: 47000, paidAt: new Date().toISOString(), canceledAmount: 0 }] });
+    check(cq10.amount === 1000 && cq10.roundedDown === 0 && cq10.credit === 47000, JSON.stringify(cq10));
+    check((await free(r10)).error === 'not_free');
+    const p10 = await prepare(r10, 1000);
+    check(p10.ok && p10.amount === 1000, JSON.stringify(p10));
+  }
+  // 구독 차감 0 인 회원은 영향 없다
+  const r0 = await member(['kidari']);
+  const q0 = await rpc('class_checkout_quote', [r0.id]);
+  check(q0.amount === 348000 && q0.roundedDown === 0 && q0.subscriptionCredit === 0, JSON.stringify(q0));
+  const cq0 = conversionQuote({ ownedCount: 1, payments: [] });
+  check(cq0.amount === 348000 && cq0.roundedDown === 0 && cq0.credit === 0, JSON.stringify(cq0));
 
   // ── (iii) 0원이 아니면 free 를 거절한다 · 다 가진 회원도 ──
   const paid = await member(['kidari']);
