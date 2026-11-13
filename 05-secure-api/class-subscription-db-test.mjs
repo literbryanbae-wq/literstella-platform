@@ -681,13 +681,14 @@ await check('선물 발급: 운영자만(1~20장) · 혼동 글자 없는 12자 
   assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan66', 21) as v`)).error, 'bad_count');
   assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan66', 0) as v`)).error, 'bad_count');
   assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('gold', 1) as v`)).error, 'bad_kind');
-  const r = await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan66', 6, '야나완 66일 성공', '2611') as v`);
+  // 아래 시험들이 코드를 여러 장 쓰므로 운영자 재량(operator) 종류로 — 야나완 종류는 받는 사람 1명당 한 해 2장(아래 별도 시험)
+  const r = await ADMQ(`select public.admin_class_subscription_gift_issue('operator', 6, '야나완 66일 성공', '2611') as v`);
   assert.equal(r.ok, true); assert.equal(r.codes.length, 6); codes = r.codes;
   for (const c of codes) assert.match(c, /^[A-HJKMNP-Z2-9]{12}$/);
   assert.equal(new Set(codes).size, 6);
   const row = await codeRow(codes[0]);
-  assert.equal(row.kind, 'yanawan66'); assert.equal(row.issued_by, 'literbryanbae@gmail.com'); assert.equal(row.redeemed_by, null);
-  assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan100', 20) as v`)).codes.length, 20, '20장까지');
+  assert.equal(row.kind, 'operator'); assert.equal(row.issued_by, 'literbryanbae@gmail.com'); assert.equal(row.redeemed_by, null);
+  assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('operator', 20) as v`)).codes.length, 20, '20장까지');
 });
 
 await check('선물 사용 스위치: 꺼져 있으면 gift_closed(판매 스위치와 별개) · 약관 변수가 없으면 닫힘 · 약관이 다르면 거절 · 코드는 그대로', async () => {
@@ -813,6 +814,91 @@ await check('회원 역할은 선물 사용 함수·선물 표를 직접 못 본
     await assert.rejects(db.query(`select * from public.class_subscription_gift_attempts`), /permission denied/);
   } finally { await db.exec(`reset role; set test.uid = '';`); }
   assert.equal((await codeRow(codes[5])).redeemed_by, null);
+});
+
+// ── 2026-11-13 D: 게시된 수강 조건 제6조에 맞춤 — 60일 등록 기한 · 받는 사람 필수 · 한 해 2장 · 본인·올인원 소장 계정 불가 ──
+const WN = '00000000-0000-4000-8000-0000000000f1';  // 66일·100일 성공한 회원(선물을 '받는' 사람 — 자기 계정엔 못 쓴다)
+const GR = '00000000-0000-4000-8000-0000000000f2';  // 성공한 회원이 구독권을 건네는 다른 분
+const GO8 = '00000000-0000-4000-8000-0000000000f3'; // 클래식 7종 전부 소장(= 올인원 8권 — 이론 자동 포함)
+const GO7 = '00000000-0000-4000-8000-0000000000f4'; // 클래식 6종 + 이론 = 7권(올인원 아님)
+const GO1 = '00000000-0000-4000-8000-0000000000f5'; // 1권 소장
+const GX = '00000000-0000-4000-8000-0000000000f7';  // 기한 지난 코드를 넣어 보는 회원
+const OTHERW = 'other-winner@example.test';
+const SEVEN = ['kidari', 'anne', 'littlewomen1', 'littlewomen2', 'pride', 'sherlock', 'gatsby'];
+await db.exec(`insert into auth.users(id, email) values ('${WN}', 'winner@example.test'), ('${GR}', 'gr@example.test'), ('${GO8}', 'go8@example.test'),
+  ('${GO7}', 'go7@example.test'), ('${GO1}', 'go1@example.test'), ('${GX}', 'gx@example.test');
+  insert into public.class_verifications values ${SEVEN.map((b) => `('go8@example.test', '${b}')`).join(', ')},
+    ${SEVEN.slice(0, 6).map((b) => `('go7@example.test', '${b}')`).join(', ')}, ('go7@example.test', 'theory'), ('go1@example.test', 'kidari');`);
+const issue = (kind, count, to) => ADMQ(`select public.admin_class_subscription_gift_issue('${kind}', ${count}${to === undefined ? '' : `, ${to === null ? 'null' : `'${to}'`}`}) as v`);
+const attempts = async (uid) => (await db.query(`select count(*)::int as c from public.class_subscription_gift_attempts where user_id = '${uid}'`)).rows[0].c;
+const yanawanCount = async (to) => (await db.query(`select count(*)::int as c from public.class_subscription_gift_codes where issued_to = '${to}' and kind <> 'operator'`)).rows[0].c;
+let wCodes = [];
+
+await check('제6조 받는 사람: 야나완 종류는 성공한 회원 이메일이 필수(없으면 issued_to_required · 이메일 아니면 bad_issued_to) · 소문자로 저장 · operator 는 선택', async () => {
+  assert.equal((await issue('yanawan66', 1)).error, 'issued_to_required');
+  assert.equal((await issue('yanawan100', 2, '   ')).error, 'issued_to_required');
+  assert.equal((await issue('yanawan66', 1, '야나완 성공')).error, 'bad_issued_to');
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscription_gift_codes where kind <> 'operator'`)).rows[0].c, 0, '한 장도 안 만든다');
+  const r = await issue('yanawan66', 1, '  Winner@Example.TEST ');
+  assert.equal(r.ok, true, JSON.stringify(r)); wCodes.push(r.codes[0]);
+  assert.equal((await codeRow(r.codes[0])).issued_to, 'winner@example.test');
+  assert.equal((await issue('operator', 1)).ok, true);
+});
+
+await check('제6조 60일: 발급하면 expires_at = 발급 + 60일 · 61일 지나면 expired_code · 조회에 expired 표시', async () => {
+  const row = await codeRow(wCodes[0]);
+  const days = (new Date(row.expires_at) - new Date(row.issued_at)) / 86400000;
+  assert.equal(days, 60);
+  const [op] = (await issue('operator', 1, 'x')).codes;
+  const orow = await codeRow(op);
+  assert.equal((new Date(orow.expires_at) - new Date(orow.issued_at)) / 86400000, 60, 'operator 도 60일');
+  await db.exec(`update public.class_subscription_gift_codes set issued_at = issued_at - interval '61 days', expires_at = expires_at - interval '61 days' where code = '${op}'`);
+  const r = await redeem(GX, op);
+  assert.equal(r.status, 400); assert.equal(r.body.error, 'expired_code');
+  const list = await ADMQ(`select public.admin_class_subscription_gift_list() as v`);
+  assert.equal(list.items.find((x) => x.code === op).expired, true);
+  assert.equal(list.items.find((x) => x.code === wCodes[0]).expired, false);
+  assert.equal(list.items.find((x) => x.code === codes[0]).expired, false, '이미 쓴 코드는 만료로 표시하지 않는다');
+});
+
+await check('제6조 한 해 2장: 66일 1장 뒤 100일 2장 요청 → year_limit(remaining 1, 0장) · 100일 1장은 된다 · 그 뒤 거절 · 다른 회원·operator 는 영향 없음 · 지난해 발급분은 세지 않는다', async () => {
+  const over = await issue('yanawan100', 2, 'winner@example.test');
+  assert.deepEqual({ e: over.error, n: over.issuedThisYear, m: over.remaining }, { e: 'year_limit', n: 1, m: 1 });
+  assert.equal(await yanawanCount('winner@example.test'), 1, '한 장도 만들지 않는다');
+  const one = await issue('yanawan100', 1, 'WINNER@example.test');
+  assert.equal(one.ok, true); wCodes.push(one.codes[0]);
+  const again = await issue('yanawan66', 1, 'winner@example.test');
+  assert.deepEqual({ e: again.error, m: again.remaining }, { e: 'year_limit', m: 0 });
+  assert.equal(await yanawanCount('winner@example.test'), 2);
+  assert.equal((await issue('yanawan100', 2, OTHERW)).ok, true, '다른 회원은 따로 센다');
+  assert.equal((await issue('operator', 3, 'winner@example.test')).ok, true, '운영자 재량 발급은 상한 밖');
+  assert.equal(await yanawanCount('winner@example.test'), 2);
+  await db.exec(`update public.class_subscription_gift_codes set issued_at = issued_at - interval '1 year' where issued_to = '${OTHERW}'`);
+  assert.equal((await issue('yanawan66', 1, OTHERW)).ok, true, '지난해(KST) 발급분은 올해 상한에 안 든다');
+});
+
+await check('제6조 본인 계정 불가: 성공한 회원 본인이 쓰면 self_not_allowed(409) · 코드는 남고 틀린 시도로 안 센다 · 다른 분은 쓸 수 있다', async () => {
+  const before = await attempts(WN);
+  const r = await redeem(WN, wCodes[0]);
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'self_not_allowed');
+  assert.equal((await codeRow(wCodes[0])).redeemed_by, null);
+  assert.equal(await attempts(WN), before);
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscriptions where user_id = '${WN}'`)).rows[0].c, 0);
+  const ok = await redeem(GR, wCodes[0]);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal((await codeRow(wCodes[0])).redeemed_by, GR);
+});
+
+await check('제6조 올인원 소장 계정 불가: 클래식 7종(=8권) 소장은 owner_not_allowed(409) · 코드는 남는다 · 6종+이론(7권)·1권은 쓸 수 있다 · 판정 = class_checkout_quote.complete 와 같다', async () => {
+  const quote = async (u) => (await db.query(`select public.class_checkout_quote('${u}') as v`)).rows[0].v;
+  assert.equal((await quote(GO8)).complete, true); assert.equal((await quote(GO7)).complete, false); assert.equal((await quote(GO1)).complete, false);
+  const ops = (await issue('operator', 3, 'note')).codes;
+  const before = await attempts(GO8);
+  const r = await redeem(GO8, ops[0]);
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'owner_not_allowed');
+  assert.equal((await codeRow(ops[0])).redeemed_by, null);
+  assert.equal(await attempts(GO8), before);
+  assert.equal((await redeem(GO7, ops[0])).status, 200, '6종+이론 = 올인원 아님 → 같은 코드를 쓸 수 있다');
+  assert.equal((await redeem(GO1, ops[1])).status, 200);
 });
 
 console.log(`class-subscription-db-test: ${n} checks passed (토스 청구 ${toss.charges}회)`);

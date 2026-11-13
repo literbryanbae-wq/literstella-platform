@@ -86,6 +86,7 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       if (g.acceptedTermsVersion !== tm.version) return reply({ ok: false, error: 'terms_changed' }, 409);
       if (typeof g.code !== 'string' || !g.code.trim() || g.code.length > 40) return reply({ ok: false, error: 'invalid_code' }, 400);
       const r = await t.rpc('gift_redeem', { p_user_id: user.id, p_code: g.code, p_terms_version: tm.version, p_terms_url: tm.url });
+      // self_not_allowed(성공한 회원 본인) · owner_not_allowed(올인원 소장) · already_subscribed = 409, 코드는 남는다(수강 조건 제6조)
       const status = r.ok ? 200 : r.error === 'too_many_attempts' ? 429 : r.error === 'login_required' ? 401
         : ['invalid_code', 'used_code', 'expired_code'].includes(r.error) ? 400 : 409;
       return reply(r, status);

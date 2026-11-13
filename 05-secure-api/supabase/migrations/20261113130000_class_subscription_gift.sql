@@ -7,6 +7,8 @@
 --     cancel_requested_at = now() → 기간이 끝나면 class_subscription_expire 가 정리한다(안 넣으면 기간 뒤 새 가입이 already_subscribed 로 막힌다)
 --     결제 행(class_subscription_payments)은 만들지 않는다 → 올인원 전환 차감(class_checkout_quote)·런칭 선물(bonus_months)이 세지 않는다.
 --   코드: 혼동 글자(I·L·O·0·1) 없는 대문자·숫자 12자(31종 — 함께 읽기 초대 코드와 같은 글자판). 저장은 하이픈 없이, 'XXXX-XXXX-XXXX' 표시는 화면 몫.
+--   수강 조건 제6조(2026-11-12 게시)에 맞춤(2026-11-13): 지급일부터 60일 안 등록 · 성공한 회원 본인 계정 불가 ·
+--     이미 구독 중·올인원 소장 계정 불가 · 성공한 회원 한 명당 한 해(KST) 2장까지(야나완 종류만).
 --   무차별 대입: 틀린 시도(없는 코드·쓴 코드·만료 코드)를 계정별로 적고, 1시간에 10번이면 too_many_attempts. 성공은 세지 않는다.
 --   되돌리기(선물 행 0건일 때만): drop function public.class_subscription_gift_redeem(uuid,text,text,text),
 --     public.admin_class_subscription_gift_issue(text,integer,text,text), public.admin_class_subscription_gift_list(), private.class_subscription_gift_code();
@@ -62,29 +64,54 @@ end $$;
 revoke all on function private.class_subscription_gift_code() from public, anon, authenticated;
 
 -- ── ④ 발급(운영자) ──
+--   게시된 수강 조건 제6조(2026-11-12 게시)에 맞춘다(운영자 2026-11-13 "조건에 맞춰 고쳐"):
+--     · 지급일부터 60일 안에 등록 → expires_at = 발급 시각 + 60일(모든 종류 같음 · 인자로 기한을 바꾸는 길은 없다)
+--     · 야나완 성공 선물(yanawan66·yanawan100)은 '성공한 회원'(issued_to, 이메일)이 반드시 있어야 한다
+--       → 본인 계정 등록 금지·한 해 2장 상한을 그 값으로 판정한다. 저장은 lower(btrim()).
+--     · 한 해(KST 달력 연도) 2장까지 — 같은 회원에게 올해 발급된 yanawan 코드 수 + 이번 장수 > 2 이면 한 장도 만들지 않는다.
+--       100일 = '합계 2장(66일분 포함)'이라 66일로 1장 받은 회원에게는 1장만 남는다 — 이 상한 한 줄로 지켜진다.
+--     · operator(운영자 재량)는 받는 사람 선택 · 상한 제외.
 create or replace function public.admin_class_subscription_gift_issue(p_kind text, p_count integer, p_issued_to text default null, p_note text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_codes text[] := array[]::text[]; v_code text; v_try int;
+declare v_codes text[] := array[]::text[]; v_code text; v_try int; v_to text; v_year_count int := 0;
+  v_expires timestamptz := now() + interval '60 days';
 begin
   if auth.uid() is null then raise exception using errcode = '28000', message = 'login_required'; end if;
   if not public.is_ls_admin() then raise exception using errcode = '42501', message = 'admin_only'; end if;
   if p_kind is null or p_kind not in ('yanawan66','yanawan100','operator') then return jsonb_build_object('ok', false, 'error', 'bad_kind'); end if;
   if p_count is null or p_count < 1 or p_count > 20 then return jsonb_build_object('ok', false, 'error', 'bad_count'); end if;
+  v_to := nullif(lower(btrim(coalesce(p_issued_to, ''))), '');
+  if p_kind in ('yanawan66','yanawan100') then
+    if v_to is null then return jsonb_build_object('ok', false, 'error', 'issued_to_required'); end if;
+    -- 이메일 모양이 아니면 본인 등록 금지·연 상한이 조용히 빠진다 → 거절
+    if length(v_to) > 200 or v_to !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' then
+      return jsonb_build_object('ok', false, 'error', 'bad_issued_to'); end if;
+    -- 같은 회원에게 동시에 두 번 발급해도 상한을 넘지 않게 줄 세운다
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('class-subscription-gift-issue:' || v_to, 0));
+    select count(*)::int into v_year_count from public.class_subscription_gift_codes c
+     where c.issued_to = v_to and c.kind in ('yanawan66','yanawan100')
+       and date_part('year', c.issued_at at time zone 'Asia/Seoul') = date_part('year', now() at time zone 'Asia/Seoul');
+    if v_year_count + p_count > 2 then
+      return jsonb_build_object('ok', false, 'error', 'year_limit', 'issuedThisYear', v_year_count, 'remaining', greatest(2 - v_year_count, 0));
+    end if;
+  else
+    v_to := left(v_to, 200);
+  end if;
   for n in 1..p_count loop
     v_try := 0;
     loop
       v_try := v_try + 1;
       v_code := private.class_subscription_gift_code();
-      insert into public.class_subscription_gift_codes (code, kind, issued_to, note, issued_by)
-      values (v_code, p_kind, nullif(left(btrim(coalesce(p_issued_to, '')), 200), ''), nullif(left(btrim(coalesce(p_note, '')), 500), ''),
-              lower(auth.jwt() ->> 'email'))
+      insert into public.class_subscription_gift_codes (code, kind, issued_to, note, issued_by, expires_at)
+      values (v_code, p_kind, v_to, nullif(left(btrim(coalesce(p_note, '')), 500), ''),
+              lower(auth.jwt() ->> 'email'), v_expires)
       on conflict (code) do nothing;
       exit when found;
       if v_try >= 5 then raise exception 'gift_code_collision'; end if;
     end loop;
     v_codes := v_codes || v_code;
   end loop;
-  return jsonb_build_object('ok', true, 'kind', p_kind, 'count', p_count, 'codes', to_jsonb(v_codes));
+  return jsonb_build_object('ok', true, 'kind', p_kind, 'count', p_count, 'codes', to_jsonb(v_codes), 'expiresAt', v_expires);
 end $$;
 
 -- ── ⑤ 조회(운영자) — 사용한 회원 이메일은 가린다 ──
@@ -95,7 +122,9 @@ begin
   if not public.is_ls_admin() then raise exception using errcode = '42501', message = 'admin_only'; end if;
   return jsonb_build_object('ok', true, 'items', coalesce((
     select jsonb_agg(jsonb_build_object('code', g.code, 'kind', g.kind, 'issuedTo', g.issued_to, 'note', g.note,
-        'issuedAt', g.issued_at, 'expiresAt', g.expires_at, 'redeemed', g.redeemed_by is not null, 'redeemedAt', g.redeemed_at,
+        'issuedAt', g.issued_at, 'expiresAt', g.expires_at,
+        'expired', g.redeemed_by is null and g.expires_at is not null and g.expires_at <= now(),   -- 등록 기한(60일)이 지난 미사용 코드
+        'redeemed', g.redeemed_by is not null, 'redeemedAt', g.redeemed_at,
         'redeemedBy', case when u.email is null then null
           else left(split_part(u.email, '@', 1), 2) || '***@' || split_part(u.email, '@', 2) end)
       order by g.issued_at desc, g.code)
@@ -106,10 +135,11 @@ end $$;
 create or replace function public.class_subscription_gift_redeem(p_user_id uuid, p_code text, p_terms_version text, p_terms_url text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g'));
-  g public.class_subscription_gift_codes; v_sub public.class_subscriptions; v_new public.class_subscriptions;
+  g public.class_subscription_gift_codes; v_sub public.class_subscriptions; v_new public.class_subscriptions; v_email text;
 begin
   if coalesce(p_terms_version, '') = '' or coalesce(p_terms_url, '') = '' then return jsonb_build_object('ok', false, 'error', 'terms_changed'); end if;
-  if not exists (select 1 from auth.users where id = p_user_id and email_confirmed_at is not null) then
+  select lower(btrim(u.email)) into v_email from auth.users u where u.id = p_user_id and u.email_confirmed_at is not null;
+  if not found then
     return jsonb_build_object('ok', false, 'error', 'login_required'); end if;
   -- 같은 회원의 동시 사용을 줄 세운다(서로 다른 코드 두 장을 동시에 넣어도 하나만)
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('class-subscription-gift:' || p_user_id::text, 0));
@@ -133,6 +163,15 @@ begin
   if g.expires_at is not null and g.expires_at <= now() then
     insert into public.class_subscription_gift_attempts (user_id, reason, code_head) values (p_user_id, 'expired_code', left(v_code, 4));
     return jsonb_build_object('ok', false, 'error', 'expired_code'); end if;
+  -- 수강 조건 제6조: 성공한 회원 '본인이 아닌 다른 한 분'의 계정에만 — 맞는 코드이므로 소진하지 않고 틀린 시도로도 세지 않는다
+  if g.issued_to is not null and v_email is not null and lower(btrim(g.issued_to)) = v_email then
+    return jsonb_build_object('ok', false, 'error', 'self_not_allowed'); end if;
+  -- 수강 조건 제6조: 올인원을 소장한 계정에는 등록할 수 없다(코드 소진·실패 기록 없음).
+  --   판정 = 운영 정본 private.class_owned_originals(email) >= 7(클래식 7종 전부).
+  --   운영 class_checkout_quote 의 complete(8권)와 같은 답이다: 7종을 모두 가지면 '강독 2개 이상 = 핵심 이론 자동 포함' 규칙으로 8권이 되고,
+  --   7종 중 하나라도 없으면 이론을 따로 가져도 8권이 안 된다. quote 는 결제·전환 요청까지 읽고 로그인 확인을 다시 하므로 더 단순한 쪽을 쓴다.
+  if coalesce(private.class_owned_originals(v_email), 0) >= 7 then
+    return jsonb_build_object('ok', false, 'error', 'owner_not_allowed'); end if;
   -- 살아 있는 구독이 있으면 코드를 소진하지 않는다(다른 분께 주거나, 지금 구독이 끝난 뒤 쓸 수 있게)
   select * into v_sub from public.class_subscriptions where user_id = p_user_id and status in ('pending','active','past_due') for update;
   if found and v_sub.status <> 'pending' then
