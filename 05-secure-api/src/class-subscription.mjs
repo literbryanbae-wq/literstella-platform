@@ -1,10 +1,14 @@
 // 구독 정기결제(토스 빌링) — /api/class-subscription/{quote,prepare,confirm,status,cancel,upgrade-quote,upgrade,gift-redeem,webhook}
+//   + 기간권(한 번 결제, 2026-11-14) — /api/class-subscription/{once-prepare,once-confirm} · 스위치 CLASS_SUBSCRIPTION_ONETIME_ENABLED
 //   🔴 아직 진입 모듈에 연결하지 않았다(미배포). 여는 순서 = LIVE-SOURCE.md '구독 결제' 절.
 //   금액은 서버가 정한다(class-subscription-pricing.mjs). 화면이 보낸 금액은 '같은지'만 본다.
 //   카드 정보는 이 서버를 지나가지 않는다 — 토스 창이 authKey 를 주고, 서버가 그것으로 빌링키를 받는다.
 import { subscriptionQuote, conversionQuote, pointsPlan } from './class-subscription-pricing.mjs';
 
 const TOSS = 'https://api.tosspayments.com/v1';
+// 클래스 결제 위젯 공개 키(공개값) — class-member-checkout.mjs CLIENT_KEY · challenge-card-checkout.mjs CLASS_WIDGET_CLIENT_KEY 와 같은 값.
+//   그 두 모듈을 import 하지 않는다(라이브에서 묶는 방식이 달라 모듈 하나를 더 올려야 한다). 서버 변수 TOSS_CLASS_CLIENT_KEY 가 있으면 그쪽이 우선.
+const CLASS_WIDGET_CLIENT_KEY = 'live_gck_vZnjEJeQVxJnOWvQa2jZ8PmOoBN0';
 const ORDER_ID = /^sub[a-f0-9]{32}$/;
 
 function terms(env) {
@@ -17,8 +21,10 @@ function terms(env) {
   } catch { return null; }
 }
 
-function client(env, sbFetch) {
-  const auth = () => ({ Authorization: `Basic ${btoa(`${env.TOSS_BILLING_SECRET_KEY}:`)}`, 'Content-Type': 'application/json' });
+// secret = 어느 토스 상점 키로 묻는가. 자동 결제(빌링) = TOSS_BILLING_SECRET_KEY(기본) ·
+//   기간권(한 번 결제) = 클래스 결제 위젯 상점 TOSS_CLASS_SECRET_KEY(클래스 회원·강좌 결제와 같은 키 — 새 키를 만들지 않는다).
+function client(env, sbFetch, secret = env.TOSS_BILLING_SECRET_KEY) {
+  const auth = () => ({ Authorization: `Basic ${btoa(`${secret}:`)}`, 'Content-Type': 'application/json' });
   const rpc = async (name, args) => {
     const r = await sbFetch(env, `rpc/class_subscription_${name}`, { method: 'POST', body: JSON.stringify(args) });
     if (!r.ok) throw new Error('storage_unavailable');
@@ -52,6 +58,17 @@ function client(env, sbFetch) {
 }
 
 const orderName = (plan, cycle) => `리터스텔라 ${plan === 'together' ? '함께 읽기' : '개인'} ${cycle === 'year' ? '연간' : '월'} 구독`;
+const onceOrderName = (plan, cycle) => `${orderName(plan, cycle)}(1회 결제)`;
+// 거절이 분명한 토스 오류인가 — 애매하면(시간 초과·내부 오류) 실패로 적지 않는다(두 번 청구 금지). 자동 결제와 같은 규칙.
+const declined = (code) => !!code && !/TIMEOUT|UNKNOWN|PROVIDER_ERROR|FAILED_INTERNAL/.test(code);
+// 기간권 DB 오류 → HTTP 상태
+const onceStatus = (e) => e === 'login_required' ? 401 : ['bad_plan', 'bad_points', 'bad_amount', 'bad_payment'].includes(e) ? 400
+  : e === 'order_not_found' ? 404 : 409;
+
+/** 기간권(구독 한 기간을 일반 결제 한 번으로) 판매가 열려 있는가 — 자동 결제 스위치와 별개. */
+export function onetimeOpen(env, tm) {
+  return env.CLASS_SUBSCRIPTION_ONETIME_ENABLED === 'true' && !!env.TOSS_CLASS_SECRET_KEY && !!tm;
+}
 
 export async function classSubscription(req, env, cors, action, { requireUser, sbFetch, json }) {
   const reply = (body, status = 200) => json(body, status, { ...cors, 'Cache-Control': 'no-store' });
@@ -59,24 +76,34 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
   const t = client(env, sbFetch);
   try {
     if (action === 'webhook') {
-      if (!env.TOSS_BILLING_SECRET_KEY) return reply({ ok: false }, 503);
+      if (!env.TOSS_BILLING_SECRET_KEY && !env.TOSS_CLASS_SECRET_KEY) return reply({ ok: false }, 503);
       const b = await req.json();
       const key = b?.data?.paymentKey; const id = b?.data?.orderId;
       if (typeof key !== 'string' || key.length > 200 || !ORDER_ID.test(id || '')) return reply({ ok: false }, 400);
-      const [row] = await t.rows(`class_subscription_payments?id=eq.${id}&select=id,amount,payment_key&limit=1`);
+      const [row] = await t.rows(`class_subscription_payments?id=eq.${id}&select=id,amount,payment_key,subscription_id&limit=1`);
       if (!row || (row.payment_key && row.payment_key !== key)) return reply({ ok: true, ignored: true });
-      const result = await t.settle(await t.getPayment(key), id, row.amount); // 웹훅 본문은 믿지 않고 토스에 다시 묻는다
+      // 기간권 주문은 클래스 결제 위젯 상점에서 결제됐다 → 그 상점 키로 묻는다. 자동 결제 주문은 지금처럼 빌링 키.
+      const [owner] = await t.rows(`class_subscriptions?id=eq.${row.subscription_id}&select=*&limit=1`);
+      const once = owner?.billing_mode === 'once';
+      const secret = once ? env.TOSS_CLASS_SECRET_KEY : env.TOSS_BILLING_SECRET_KEY;
+      if (!secret) return reply({ ok: false }, 503);
+      const tw = once ? client(env, sbFetch, secret) : t;
+      const result = await tw.settle(await tw.getPayment(key), id, row.amount); // 웹훅 본문은 믿지 않고 토스에 다시 묻는다
       // 전액 취소(환불)된 주문에 쓴 포인트는 돌려놓는다. 실패하면 503 — 토스가 웹훅을 다시 보낸다.
       if (result.ok && result.status === 'canceled') await t.rpc('points_release', { p_order_id: id });
       // 월 → 연간 전환 결제의 부분 취소(이용 일수만큼 빼고 환불) = 쓴 포인트도 같은 비율로 돌려놓는다(운영자 2026-11-13).
       //   누적 취소액으로 매번 다시 계산하므로 웹훅을 여러 번 받아도 같은 결과. 첫·갱신 결제의 부분 취소는 지금처럼 기록만.
-      if (result.ok && result.status === 'partial_canceled' && result.kind === 'upgrade') await t.rpc('points_refund', { p_order_id: id });
+      //   기간권(한 번 결제)의 부분 취소(연간 — 지난 개월 수만큼 빼고 환불)도 같은 비율 반환(2026-11-14).
+      if (result.ok && result.status === 'partial_canceled' && (result.kind === 'upgrade' || once)) await t.rpc('points_refund', { p_order_id: id });
       return reply(result, result.ok ? 200 : 503);
     }
     const user = await requireUser(req, env);
     if (!user?.id || !user.emailConfirmed) return reply({ ok: false, error: 'login_required' }, 401);
-    if (!['quote', 'prepare', 'confirm', 'status', 'cancel', 'upgrade-quote', 'upgrade', 'gift-redeem'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
+    if (!['quote', 'prepare', 'confirm', 'status', 'cancel', 'upgrade-quote', 'upgrade', 'gift-redeem', 'once-prepare', 'once-confirm'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
     const tm = terms(env);
+    const onceOpen = onetimeOpen(env, tm);
+    // 기간권 판매 스위치가 꺼져 있으면 DB·토스를 건드리기 전에 닫는다
+    if ((action === 'once-prepare' || action === 'once-confirm') && !onceOpen) return reply({ ok: false, error: 'onetime_closed' }, 503);
     const enabled = env.CLASS_SUBSCRIPTION_ENABLED === 'true' && !!env.TOSS_BILLING_SECRET_KEY && !!env.TOSS_BILLING_CLIENT_KEY && !!tm;
     // 선물 구독권(야나완 성공 선물) — 판매 스위치와 별개. 결제가 없으니 토스 키는 보지 않고, 약관 변수는 있어야 열린다.
     const giftEnabled = env.CLASS_SUBSCRIPTION_GIFT_ENABLED === 'true' && !!tm;
@@ -98,6 +125,71 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     const owns = { ownedOriginals: owned, ownedTheory };
     const balance = Math.max(0, Number(summary?.pointsBalance) || 0);
     const b = action === 'status' ? {} : await req.json().catch(() => ({}));
+    // 기간권은 처음 결제에만 포인트(판정 = DB private.class_subscription_points_allowed) — 못 읽으면 true(자동 결제 첫 결제와 같은 화면)
+    const pointsAllowed = summary?.pointsAllowed !== false;
+
+    if (action === 'once-prepare') {
+      // 기간권 주문 만들기 — 금액은 자동 결제와 같은 서버 견적(요금제 × 주기 × 소장 할인). 포인트는 처음 결제에만.
+      const q = subscriptionQuote({ plan: b.plan, cycle: b.cycle, ownedCount: owned, ownedTheory });
+      if (!q.ok) return reply(q, 400);
+      if (b.acceptedTermsVersion !== tm.version) return reply({ ok: false, error: 'terms_changed' }, 409);
+      if (b.expectedAmount !== q.amount) return reply({ ok: false, error: 'amount_mismatch', amount: q.amount }, 409);
+      const wants = b.usePoints === undefined || b.usePoints === null ? 0 : b.usePoints;
+      if (wants !== 0 && Number.isInteger(wants) && wants > 0 && !pointsAllowed) return reply({ ok: false, error: 'points_not_allowed' }, 409);
+      const pts = pointsPlan(q, b.usePoints, balance);
+      if (!pts.ok) return reply({ ...pts, balance }, pts.error === 'points_short' ? 409 : 400);
+      const r = await t.rpc('once_begin', { p_user_id: user.id, p_plan: b.plan, p_cycle: b.cycle, p_amount: q.amount,
+        p_list_amount: q.listAmount, p_owned_count: q.discountBooks, p_terms_version: tm.version, p_terms_url: tm.url, p_points: pts.usePoints });
+      if (!r.ok) return reply(r, onceStatus(r.error));
+      return reply({ ...r, listAmount: q.listAmount, ownedDiscount: q.ownedDiscount, orderName: onceOrderName(r.plan, r.cycle),
+        billingMode: 'once', clientKey: env.TOSS_CLASS_CLIENT_KEY || CLASS_WIDGET_CLIENT_KEY });
+    }
+
+    if (action === 'once-confirm') {
+      // 토스 결제창이 돌려준 paymentKey·orderId·amount 로 승인한다. 같은 주문을 다시 보내도 같은 답(두 번 결제·두 기간 없음).
+      if (!ORDER_ID.test(b.orderId || '') || typeof b.paymentKey !== 'string' || !b.paymentKey || b.paymentKey.length > 200 || !Number.isSafeInteger(b.amount)) {
+        return reply({ ok: false, error: 'bad_payment' }, 400);
+      }
+      const tc = client(env, sbFetch, env.TOSS_CLASS_SECRET_KEY);
+      const o = await tc.rpc('once_claim', { p_user_id: user.id, p_order_id: b.orderId, p_payment_key: b.paymentKey, p_amount: b.amount });
+      if (!o.ok) return reply(o, onceStatus(o.error));
+      if (o.status === 'paid') return reply({ ok: true, status: 'paid', orderId: o.orderId, periodEnd: o.periodEnd, billingMode: 'once' });
+      const finish = async (pay) => {
+        const result = await tc.settle(pay, o.orderId, o.amount);
+        if (result.ok && result.status === 'canceled' && o.pointsUsed > 0) await tc.rpc('points_release', { p_order_id: o.orderId });
+        return reply(result.ok ? { ...result, billingMode: 'once' } : result, result.ok ? 200 : 409);
+      };
+      // 승인 전에 토스에 먼저 묻는다 — 이미 끝난 결제면 그 결과를 반영만 한다(다시 승인하지 않는다)
+      const existing = await tc.getPayment(b.paymentKey);
+      if (existing.orderId !== o.orderId || existing.paymentKey !== b.paymentKey || existing.totalAmount !== o.amount || existing.currency !== 'KRW') {
+        return reply({ ok: false, error: 'payment_mismatch' }, 409);
+      }
+      if (['DONE', 'CANCELED', 'PARTIAL_CANCELED'].includes(existing.status)) return finish(existing);
+      if (['ABORTED', 'EXPIRED'].includes(existing.status)) {
+        await tc.rpc('fail', { p_order_id: o.orderId, p_code: existing.status });
+        if (o.pointsUsed > 0) await tc.rpc('points_release', { p_order_id: o.orderId });
+        return reply({ ok: false, error: 'card_declined' }, 402);
+      }
+      // 포인트는 승인 직전에 차감한다 — 모자라면 승인하지 않는다(돈이 나가지 않는다)
+      if (o.pointsUsed > 0) {
+        const held = await tc.rpc('points_reserve', { p_order_id: o.orderId });
+        if (!held.ok) return reply({ ok: false, error: held.error || 'points_short' }, 409);
+      }
+      const response = await fetch(`${TOSS}/payments/confirm`, {
+        method: 'POST', headers: { ...tc.auth(), 'Idempotency-Key': o.orderId },
+        body: JSON.stringify({ paymentKey: b.paymentKey, orderId: o.orderId, amount: o.amount }), signal: AbortSignal.timeout(10000),
+      });
+      const pay = await response.json().catch(() => ({}));
+      if (!response.ok && pay.code !== 'ALREADY_PROCESSED_PAYMENT') {
+        if (declined(pay.code)) {
+          await tc.rpc('fail', { p_order_id: o.orderId, p_code: pay.code });
+          if (o.pointsUsed > 0) await tc.rpc('points_release', { p_order_id: o.orderId }); // 거절이 분명하니 포인트를 돌려놓는다
+          return reply({ ok: false, error: 'card_declined' }, 402);
+        }
+        return reply({ ok: false, error: 'payment_pending' }, 202); // 애매함 — 같은 값으로 once-confirm 을 다시 부르면 된다
+      }
+      return finish(await tc.getPayment(b.paymentKey));
+    }
 
     if (action === 'status') {
       // 내 서재가 읽는다 — 구독 상태 + 올인원 전환 견적(12월 31일까지 낸 금액만큼 차감)
@@ -105,7 +197,7 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
       const conversion = ownedAll?.ok && !ownedAll.complete
         ? conversionQuote({ ownedCount: ownedAll.ownedCount, payments: summary?.payments || [] }) : null;
-      return reply({ ok: true, subscription: summary?.subscription || null, checkoutEnabled: enabled, giftEnabled, terms: tm,
+      return reply({ ok: true, subscription: summary?.subscription || null, checkoutEnabled: enabled, giftEnabled, onetimeOpen: onceOpen, pointsAllowed, terms: tm,
         conversion: conversion && conversion.credit > 0 ? conversion : null });
     }
     if (action === 'cancel') {
@@ -117,6 +209,10 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       //   🔴 요금제는 지금 월 구독의 것 그대로(운영자 2026-11-13) — 화면이 보낸 plan 은 믿지 않는다.
       //   함께 읽기 → 개인으로 바꾸면 초대받은 분들의 자리가 그 순간 닫힌다. 다른 plan 을 보내면 409 plan_fixed(청구 0).
       //   upgrade_begin(DB, 운영 적용됨)은 p_plan 을 그대로 받으므로 막는 곳은 여기 한 곳이다(service_role 전용 RPC).
+      // 기간권(한 번 결제)에는 등록된 카드가 없다 — 월 → 연간은 '끝나기 14일 전부터 연간으로 이어 사기'(once-prepare)로(운영자 2026-11-14)
+      if (summary?.subscription?.billingMode === 'once' && ['active', 'past_due'].includes(summary.subscription.status)) {
+        return reply({ ok: false, error: 'once_use_renewal', renewableFrom: summary.subscription.renewableFrom ?? null }, 409);
+      }
       const uq = await t.rpc('upgrade_quote', { p_user_id: user.id });
       if (!uq.ok) return reply(uq, 409);
       const plan = uq.plan || summary?.subscription?.plan;
@@ -159,7 +255,8 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       // 무료로 먼저 써 본 분의 첫 결제에 더 드리는 달(런칭 선물) — 못 읽으면 0 으로 보여 주고, 실제 적용은 주문을 만들 때 DB 가 다시 정한다.
       const bonus = await t.rpc('bonus', { p_user_id: user.id, p_plan: b.plan, p_cycle: b.cycle }).catch(() => null);
       q.bonusMonths = Number(bonus?.months) || 0;
-      return reply({ ...q, pointsMax: Math.min(q.pointsMax, balance), pointsBalance: balance, ownedCount: q.discountBooks, ...owns, terms: tm, checkoutEnabled: enabled, subscription: summary?.subscription || null,
+      // pointsAllowed = 기간권에 포인트를 쓸 수 있는가(처음 결제만). 자동 결제 첫 결제(prepare)는 이 값과 무관하게 지금처럼.
+      return reply({ ...q, pointsMax: Math.min(q.pointsMax, balance), pointsBalance: balance, pointsAllowed, ownedCount: q.discountBooks, ...owns, terms: tm, checkoutEnabled: enabled, onetimeOpen: onceOpen, subscription: summary?.subscription || null,
         clientKey: enabled ? env.TOSS_BILLING_CLIENT_KEY : null });
     }
     if (!enabled) return reply({ ok: false, error: 'checkout_closed' }, 503);
@@ -216,7 +313,13 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
 /** 크론 — 오늘 청구할 구독을 청구하고, 끝난 해지 구독을 정리한다. 결과 숫자만 돌려준다. */
 export async function chargeDueSubscriptions(env, { sbFetch, limit = 20 } = {}) {
   const out = { due: 0, paid: 0, failed: 0, pending: 0, expired: 0 };
-  if (env.CLASS_SUBSCRIPTION_ENABLED !== 'true' || !env.TOSS_BILLING_SECRET_KEY) return out;
+  if (env.CLASS_SUBSCRIPTION_ENABLED !== 'true' || !env.TOSS_BILLING_SECRET_KEY) {
+    // 자동 결제가 꺼져 있어도 기간권·선물 구독은 기간이 끝나면 정리해야 한다(청구는 하지 않는다)
+    if (env.CLASS_SUBSCRIPTION_ONETIME_ENABLED === 'true' || env.CLASS_SUBSCRIPTION_GIFT_ENABLED === 'true') {
+      try { out.expired = Number(await client(env, sbFetch).rpc('expire', {})) || 0; } catch { /* 다음 크론이 다시 */ }
+    }
+    return out;
+  }
   const t = client(env, sbFetch);
   const due = await t.rpc('due', { p_limit: limit });
   out.due = Array.isArray(due) ? due.length : 0;
