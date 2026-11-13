@@ -7,7 +7,7 @@
   //   진입을 index.js 로 두면 /api/class-checkout/*·결제 메일 재시도가 통째로 빠진다(2026-10-17 사고, 90분).
   //   build 명령(ops/build-live.mjs)이 src/index.js 를 index.js 한 파일로 묶고 결제 모듈 8개를 그대로 옆에 둔
   //   dist/live/ 를 만들고, 그 폴더를 묶지 않고 그대로 올린다 → 모듈 9개·이름·바이트가 라이브와 같다.
-  "main": "dist/live/class-checkout-email-entry.mjs",
+  "main": "dist/live/class-subscription-entry.mjs", // 2026-11-13: 구독 진입이 class-checkout-email-entry 를 감싼다(/api/class-subscription/* 만 가로챔)
   "build": { "command": "node ops/build-live.mjs" },
   "no_bundle": true,
   "base_dir": "dist/live",

@@ -18,7 +18,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 
 export const WRANGLER_VERSION = '4.151.1';
-export const ENTRY = 'class-checkout-email-entry.mjs';
+export const ENTRY = 'class-subscription-entry.mjs'; // 2026-11-13 구독 정기결제 진입(class-checkout-email-entry 를 감싼다)
 // dist/live 에 src 에서 그대로 복사하는 모듈(묶지 않는다). 라이브 모듈 이름과 같다.
 export const PASSTHROUGH_MODULES = Object.freeze([
   'class-checkout-email-entry.mjs',
@@ -29,6 +29,9 @@ export const PASSTHROUGH_MODULES = Object.freeze([
   'class-course-checkout.mjs',
   'class-payment-probe-entry.mjs',
   'class-payment-probe.mjs',
+  'class-subscription-entry.mjs',
+  'class-subscription.mjs',
+  'class-subscription-pricing.mjs',
 ]);
 
 const root = fileURLToPath(new URL('..', import.meta.url));

@@ -1,5 +1,5 @@
 // 구독 정기결제 진입 — 지금 라이브 진입(class-checkout-email-entry.mjs)을 그대로 감싼다.
-//   🔴 아직 wrangler.jsonc 의 main 이 아니다(미배포). 여는 날: main 을 이 파일로 바꾸고 build-live·verify-live 목록에 모듈 3개를 더한다.
+//   2026-11-13 부터 wrangler.jsonc 의 main(라이브 진입). 판매는 CLASS_SUBSCRIPTION_ENABLED + 토스 빌링 키 + 약관 변수가 다 있을 때만 열린다.
 //   /api/class-subscription/* 만 가로채고 나머지는 전부 아래로 넘긴다. 매일 크론(25 18 * * * = KST 03:25)에 청구·정리.
 import live from './class-checkout-email-entry.mjs';
 import { classSubscription, chargeDueSubscriptions } from './class-subscription.mjs';
