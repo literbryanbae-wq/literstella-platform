@@ -27,6 +27,24 @@ check('4권 이상은 올인원 소장을 권한다 — 구독 금액은 정가'
   assert.equal(subscriptionQuote({ plan: 'solo', cycle: 'year', ownedCount: 3 }).suggestOwnership, false);
 });
 
+check('핵심 이론을 소장으로 센다 — 올인원 결제와 같은 규칙(운영자 2026-11-13)', () => {
+  const solo = (o, t) => subscriptionQuote({ plan: 'solo', cycle: 'year', ownedCount: o, ownedTheory: t });
+  assert.equal(solo(1, false).amount, 88000, '오리지널 1권 = 이론 없음');
+  assert.equal(solo(2, true).amount, 66000, '오리지널 2권 + 이론 = 3/9');
+  assert.equal(solo(2, true).discountBooks, 3);
+  assert.equal(solo(3, true).amount, 55000, '오리지널 3권 + 이론 = 4/9 — 권유 문턱은 오리지널만 본다');
+  assert.equal(solo(3, true).suggestOwnership, false);
+  assert.equal(solo(0, true).amount, 88000, '이론만 소장 = 1/9');
+  assert.equal(solo(0, true).discountBooks, 1);
+  assert.equal(solo(4, true).amount, 99000, '오리지널 4권 = 할인 없이 올인원 권유');
+  assert.equal(solo(4, true).suggestOwnership, true);
+  assert.equal(subscriptionQuote({ plan: 'together', cycle: 'year', ownedCount: 2, ownedTheory: true }).amount, Math.round((149000 - (149000 / 3) * (3 / 9)) / 100) * 100);
+  assert.equal(subscriptionQuote({ plan: 'together', cycle: 'year', ownedCount: 2, ownedTheory: true }).amount, 132400);
+  assert.equal(subscriptionQuote({ plan: 'solo', cycle: 'month', ownedCount: 3, ownedTheory: true }).amount, 9900, '월 구독은 언제나 정가');
+  assert.equal(subscriptionQuote({ plan: 'together', cycle: 'month', ownedCount: 0, ownedTheory: true }).amount, 14900);
+  assert.equal(solo(2, 'true').amount, 77000, '문자열 true 는 세지 않는다(DB 의 boolean 만)');
+});
+
 check('포인트는 결제액의 30%까지', () => {
   assert.equal(subscriptionQuote({ plan: 'solo', cycle: 'year' }).pointsMax, 2970);
   assert.equal(subscriptionQuote({ plan: 'together', cycle: 'year' }).pointsMax, 4470);

@@ -106,6 +106,11 @@ await db.exec(POINTS); await db.exec(POINTS);
 // 런칭 선물(더 드리는 달) + 월 → 연간 전환 — 맨 뒤에 · 두 번 돌려도 된다
 const LAUNCH = await readFile(new URL('./supabase/migrations/20261113100000_class_subscription_launch_upgrade.sql', import.meta.url), 'utf8');
 await db.exec(LAUNCH); await db.exec(LAUNCH);
+// 핵심 이론 할인 + 전환 결제 환불 규칙(2026-11-13) — 맨 뒤에 · 두 번 돌려도 된다
+//   lecture_progress 는 운영에 이미 있다(마이그레이션이 만들지 않는다) — 시험에서만 최소 칸으로 만든다.
+await db.exec(`create table public.lecture_progress(email text, book_code text, ep smallint, first_seen_at timestamptz default now(), last_seen_at timestamptz default now())`);
+const REFUND = await readFile(new URL('./supabase/migrations/20261113110000_class_subscription_theory_refund.sql', import.meta.url), 'utf8');
+await db.exec(REFUND); await db.exec(REFUND);
 await db.exec(`insert into public.class_trial_signups(user_id, kind) values ('${T}', 'all'), ('${T2}', 'all')`);
 
 // ── 서버가 쓰는 DB 통로(PostgREST 흉내) ──
@@ -460,6 +465,152 @@ await check('회원은 전환·선물 함수를 직접 못 부른다', async () 
   try {
     await assert.rejects(db.query(`select public.class_subscription_upgrade_begin('${T}', 'solo', 99000, 99000, 0, 'v', 'u', 0)`));
     await assert.rejects(db.query(`select public.class_subscription_bonus('${T}', 'solo', 'year')`));
+  } finally { await db.exec('reset role;'); }
+});
+
+// ── 2026-11-13 A: 구독 할인에 핵심 이론을 소장으로 센다(올인원 결제와 같은 규칙) ──
+const O2 = '00000000-0000-4000-8000-0000000000b8'; // 오리지널 2권(키다리·앤) → 이론 자동 포함 → 3/9
+const OT = '00000000-0000-4000-8000-0000000000b9'; // 이론만 실제로 소장 → 1/9
+await db.exec(`insert into auth.users(id, email) values ('${O2}', 'o2@example.test'), ('${OT}', 'ot@example.test');
+  insert into public.class_verifications values ('O2@example.test', 'kidari'), ('o2@example.test', 'anne');
+  insert into public.class_redemptions values ('ot@example.test', 'theory');`);
+
+await check('이론 포함: 오리지널 2권 소장 회원의 연간 개인 견적 66,000원(할인에 센 권수 3) · 월은 정가', async () => {
+  const sm = (await db.query(`select public.class_subscription_summary('${O2}') as v`)).rows[0].v;
+  assert.equal(sm.ownedOriginals, 2); assert.equal(sm.ownedTheory, true);
+  const q = (await api(O2, 'quote', { plan: 'solo', cycle: 'year' })).body;
+  assert.equal(q.amount, 66000); assert.equal(q.ownedCount, 3); assert.equal(q.ownedOriginals, 2); assert.equal(q.ownedTheory, true);
+  assert.equal((await api(O2, 'quote', { plan: 'solo', cycle: 'month' })).body.amount, 9900);
+  assert.equal((await api(O2, 'quote', { plan: 'together', cycle: 'year' })).body.amount, 132400);
+});
+
+await check('이론 포함: 이론만 실제로 소장 = 88,000원 · 오리지널 1권(U)은 이론 없이 그대로 · 구독 안 한 회원(W)은 이론 없음', async () => {
+  assert.equal((await db.query(`select public.class_subscription_summary('${OT}') as v`)).rows[0].v.ownedTheory, true);
+  assert.equal((await api(OT, 'quote', { plan: 'solo', cycle: 'year' })).body.amount, 88000);
+  assert.equal((await db.query(`select public.class_subscription_summary('${U}') as v`)).rows[0].v.ownedTheory, false);
+  assert.equal((await db.query(`select public.class_subscription_summary('${W}') as v`)).rows[0].v.ownedTheory, false);
+});
+
+// ── 2026-11-13 B: 월 → 연간 전환 결제의 환불 ──
+const R1 = '00000000-0000-4000-8000-0000000000c1'; const RM1 = '00000000-0000-4000-8000-0000000000c2'; // 전액 환불 → 월로 되돌림
+const R2 = '00000000-0000-4000-8000-0000000000c4'; const RM2 = '00000000-0000-4000-8000-0000000000c5'; // 부분 환불 → 구독 종료
+await db.exec(`insert into auth.users(id, email) values ('${R1}', 'r1@example.test'), ('${R2}', 'r2@example.test');
+  insert into public.users values ('${RM1}', '${R1}'), ('${RM2}', '${R2}');
+  insert into public.point_transactions(user_id, amount, reason, ref_id) values
+    ('${RM1}', 3000, 'adjust', 'r1a'), ('${RM1}', 2000, 'adjust', 'r1b'), ('${RM2}', 3000, 'adjust', 'r2a'), ('${RM2}', 2000, 'adjust', 'r2b');`);
+const bal = async (m) => (await db.query(`select coalesce(sum(amount),0)::int as b from public.point_transactions where user_id = '${m}'`)).rows[0].b;
+const halfMonth = async (uid) => db.exec(`update public.class_subscription_payments set period_start = now() - interval '10 days', period_end = now() + interval '10 days' where user_id = '${uid}' and status = 'paid';
+  update public.class_subscriptions set current_period_start = (select period_start from public.class_subscription_payments where user_id = '${uid}' and status = 'paid'),
+    current_period_end = (select period_end from public.class_subscription_payments where user_id = '${uid}' and status = 'paid') where user_id = '${uid}'`);
+const upgradePay = async (uid) => (await db.query(`select * from public.class_subscription_payments where user_id = '${uid}' and kind = 'upgrade' and status in ('paid','canceled') order by created_at desc limit 1`)).rows[0];
+const hook = async (orderId, paymentKey) => {
+  const deps = { requireUser: async () => null, sbFetch, json };
+  const r = await classSubscription(new Request('https://x/api/class-subscription/webhook', { method: 'POST', body: JSON.stringify({ data: { paymentKey, orderId } }) }), ENV, {}, 'webhook', deps);
+  return { status: r.status, body: await r.json() };
+};
+const refundQuote = async (uid) => (await db.query(`select public.class_subscription_refund_quote('${uid}') as v`)).rows[0].v;
+
+let r1Before;
+await check('전환 결제(포인트 1,000P + 카드 84,100원): 바꾸기 직전 월 구독 값을 prev 로 남긴다', async () => {
+  const j = await join(R1, 'solo', 'month');
+  assert.equal(j.c.body.status, 'paid');
+  await halfMonth(R1);
+  r1Before = await sub(R1);
+  const r = await api(R1, 'upgrade', { expectedAmount: 94100, usePoints: 1000, ...terms });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(toss.lastAmount, 84100);
+  assert.equal(await bal(RM1), 4000);
+  const p = await upgradePay(R1);
+  const prev = p.upgrade_to.prev;
+  assert.equal(prev.plan, 'solo'); assert.equal(prev.amount, 9900); assert.equal(prev.cancelRequested, false);
+  assert.equal(new Date(prev.periodEnd).getTime(), new Date(r1Before.current_period_end).getTime());
+  assert.equal(new Date(prev.periodStart).getTime(), new Date(r1Before.current_period_start).getTime());
+});
+
+await check('환불 견적: 7일 안·유료 강의 안 들음 = 전액(full) · 무료 구간(1~5강)·전환 전 청취는 세지 않는다 · 6강~ 들으면 비율(prorated)', async () => {
+  let q = await refundQuote(R1);
+  assert.deepEqual({ mode: q.mode, within: q.withinDays7, heard: q.heardPaidLecture, card: q.refundCard, pts: q.pointsReturn, ends: q.endsSubscription, paid: q.paidCard, annual: q.annualAmount },
+    { mode: 'full', within: true, heard: false, card: 84100, pts: 1000, ends: false, paid: 84100, annual: 99000 });
+  await db.exec(`insert into public.lecture_progress(email, book_code, ep) values ('R1@example.test', 'oz', 3), ('r1@example.test', 'kidari', 9);
+    insert into public.lecture_progress(email, book_code, ep, last_seen_at) values ('r1@example.test', 'littleprince', 8, now() - interval '30 days')`);
+  assert.equal((await refundQuote(R1)).mode, 'full', '무료 구간·다른 책·전환 전 청취');
+  await db.exec(`insert into public.lecture_progress(email, book_code, ep) values ('R1@example.test', 'littleprince', 6)`);
+  q = await refundQuote(R1);
+  assert.equal(q.heardPaidLecture, true); assert.equal(q.mode, 'prorated'); assert.equal(q.endsSubscription, true);
+  // 이용 1일: 84,100 − 99,000/365 × 1 = 83,828.8 → 83,800
+  assert.equal(q.daysUsed, 1); assert.equal(q.refundCard, 83800); assert.equal(q.pointsReturn, Math.floor(1000 * 83800 / 84100));
+  await db.exec(`delete from public.lecture_progress where lower(email) = 'r1@example.test'`);
+  assert.equal((await refundQuote(T2)).error, 'not_upgrade', '지금 기간 결제가 첫 결제면 견적 없음');
+  assert.equal((await refundQuote(W)).error, 'no_subscription');
+});
+
+await check('전환 결제 전액 취소: 월 구독·원래 기간으로 되돌리고 포인트 전부 반환 · 웹훅을 두 번 받아도 같은 결과', async () => {
+  const p = await upgradePay(R1);
+  const t = toss.payments.get(p.payment_key); t.status = 'CANCELED'; t.balanceAmount = 0;
+  for (let i = 0; i < 2; i++) {
+    const r = await hook(p.id, p.payment_key);
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.status, 'canceled');
+    const s = await sub(R1);
+    assert.equal(s.cycle, 'month'); assert.equal(s.plan, 'solo'); assert.equal(s.amount, 9900); assert.equal(s.status, 'active');
+    assert.equal(new Date(s.current_period_start).getTime(), new Date(r1Before.current_period_start).getTime());
+    assert.equal(new Date(s.current_period_end).getTime(), new Date(r1Before.current_period_end).getTime());
+    assert.equal(new Date(s.next_charge_at).getTime(), new Date(r1Before.current_period_end).getTime());
+    assert.equal(s.cancel_requested_at, null); assert.equal(s.ended_at, null);
+    assert.equal(await bal(RM1), 5000, `포인트 전부 반환(${i + 1}번째)`);
+    assert.equal((await upgradePay(R1)).status, 'canceled');
+  }
+  assert.equal(await access(R1, 'r1@example.test', 'anne'), true, '월 구독 책은 남은 기간 동안 열려 있다');
+  assert.equal(await access(R1, 'r1@example.test', 'oz'), false, '연간 책(오즈)은 닫힌다');
+  assert.equal((await api(R1, 'upgrade-quote', {})).body.ok, true, '다시 전환할 수 있다');
+});
+
+let r2Pay;
+await check('전환 결제 부분 취소(7일 지남 · 이용 10일): 견적대로 환불 · 구독 종료 · 포인트는 같은 비율로 반환', async () => {
+  await join(R2, 'solo', 'month');
+  await halfMonth(R2);
+  const r = await api(R2, 'upgrade', { expectedAmount: 94100, usePoints: 2000, ...terms });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(toss.lastAmount, 74100);
+  assert.equal(await bal(RM2), 3000);
+  r2Pay = await upgradePay(R2);
+  await db.exec(`update public.class_subscription_payments set period_start = now() - interval '10 days' + interval '1 hour', paid_at = now() - interval '10 days' + interval '1 hour' where id = '${r2Pay.id}';
+    update public.class_subscriptions set current_period_start = now() - interval '10 days' + interval '1 hour' where user_id = '${R2}'`);
+  const q = await refundQuote(R2);
+  // 74,100 − 99,000/365 × 10 = 71,387.7 → 71,300 · 포인트 floor(2,000 × 71,300 / 74,100) = 1,924
+  assert.deepEqual({ mode: q.mode, within: q.withinDays7, days: q.daysUsed, card: q.refundCard, pts: q.pointsReturn, ends: q.endsSubscription },
+    { mode: 'prorated', within: false, days: 10, card: 71300, pts: 1924, ends: true });
+  const t = toss.payments.get(r2Pay.payment_key); t.status = 'PARTIAL_CANCELED'; t.balanceAmount = 74100 - q.refundCard;
+  for (let i = 0; i < 2; i++) {
+    const h = await hook(r2Pay.id, r2Pay.payment_key);
+    assert.equal(h.status, 200, JSON.stringify(h.body)); assert.equal(h.body.status, 'partial_canceled'); assert.equal(h.body.kind, 'upgrade');
+    const s = await sub(R2);
+    assert.equal(s.status, 'canceled'); assert.ok(s.ended_at); assert.equal(s.next_charge_at, null);
+    assert.ok(new Date(s.current_period_end).getTime() <= Date.now() + 1000);
+    assert.equal(await bal(RM2), 5000 - 76, `남는 포인트 2,000 − 1,924 = 76P(${i + 1}번째)`);
+    const rows = (await db.query(`select amount from public.point_transactions where user_id = '${RM2}' and reason = 'subscription'`)).rows;
+    assert.deepEqual(rows, [{ amount: -76 }], '양수 줄을 넣지 않고 차감 줄을 고쳐 쓴다');
+    const p = (await db.query(`select status, canceled_amount from public.class_subscription_payments where id = '${r2Pay.id}'`)).rows[0];
+    assert.deepEqual(p, { status: 'paid', canceled_amount: 71300 });
+  }
+  assert.equal(await access(R2, 'r2@example.test', 'oz'), false); assert.equal(await access(R2, 'r2@example.test', 'anne'), false);
+  assert.equal((await db.query(`select count(*)::int as c from public.point_transactions where amount > 0 and reason = 'subscription'`)).rows[0].c, 0);
+});
+
+await check('부분 취소 뒤 나머지까지 전액 취소돼도 끝난 구독을 되살리지 않는다 · 남은 포인트도 돌아온다', async () => {
+  const t = toss.payments.get(r2Pay.payment_key); t.status = 'CANCELED'; t.balanceAmount = 0;
+  const h = await hook(r2Pay.id, r2Pay.payment_key);
+  assert.equal(h.status, 200); assert.equal(h.body.status, 'canceled');
+  const s = await sub(R2);
+  assert.equal(s.status, 'canceled'); assert.equal(s.cycle, 'year');
+  assert.equal(await bal(RM2), 5000);
+});
+
+await check('회원 역할은 환불 함수를 직접 못 부른다', async () => {
+  await db.exec(`set test.uid = '${R1}'; set role authenticated;`);
+  try {
+    await assert.rejects(db.query(`select public.class_subscription_points_refund('${r2Pay.id}')`), /permission denied/);
+    await assert.rejects(db.query(`select public.class_subscription_refund_quote('${R1}')`), /permission denied/);
+  } finally { await db.exec('reset role; set role anon;'); }
+  try {
+    await assert.rejects(db.query(`select public.class_subscription_refund_quote('${R1}')`), /permission denied/);
   } finally { await db.exec('reset role;'); }
 });
 

@@ -17,20 +17,25 @@ const round100 = (n) => Math.round(n / 100) * 100;
 const ownedN = (n) => Math.max(0, Math.min(8, Math.trunc(Number(n) || 0)));
 
 /** 구독 결제 금액. 소장 겹침 할인은 연간에만 — 월 구독은 정가(운영자 2026-11-13 확정).
- *  ownedCount = 소장한 오리지널 강독 수(0~7). 핵심 이론은 무료 강의라 세지 않는다(충돌표 21번). */
-export function subscriptionQuote({ plan, cycle, ownedCount = 0 } = {}) {
+ *  ownedCount = 소장한 오리지널 강독 수(0~7).
+ *  ownedTheory = 핵심 이론을 소장으로 세는가 — 올인원 결제(class_checkout_quote)와 같은 규칙(운영자 2026-11-13):
+ *    오리지널 2권 이상 소장했거나 theory 를 실제로 소장했으면 true. 판정은 DB(class_subscription_summary)가 한다.
+ *  할인에 세는 권수(discountBooks) = 오리지널 + 이론(0/1). 분모는 9(ANNUAL_BOOKS) 그대로.
+ *  🔴 올인원 권유(할인 중단) 문턱은 오리지널 권수만 본다 — 오리지널 3 + 이론 = 4/9 할인이 적용된다. */
+export function subscriptionQuote({ plan, cycle, ownedCount = 0, ownedTheory = false } = {}) {
   const p = SUBSCRIPTION_PLANS[plan];
   if (!p || !['month', 'year'].includes(cycle)) return { ok: false, error: 'bad_plan' };
   const owned = ownedN(ownedCount);
+  const discountBooks = Math.min(ANNUAL_BOOKS, owned + (ownedTheory === true ? 1 : 0));
   const list = p[cycle];
   let amount = list;
-  if (cycle === 'year' && owned > 0 && owned < OWNERSHIP_STEER_FROM) {
+  if (cycle === 'year' && discountBooks > 0 && owned < OWNERSHIP_STEER_FROM) {
     // 개인 = 전체에서 겹치는 만큼 · 함께 읽기 = 본인 몫(1/3)에서만 겹치는 만큼
     const share = plan === 'together' ? list / p.seats : list;
-    amount = round100(list - share * (owned / ANNUAL_BOOKS));
+    amount = round100(list - share * (discountBooks / ANNUAL_BOOKS));
   }
   return {
-    ok: true, plan, cycle, listAmount: list, amount, ownedDiscount: list - amount,
+    ok: true, plan, cycle, listAmount: list, amount, ownedDiscount: list - amount, discountBooks,
     suggestOwnership: owned >= OWNERSHIP_STEER_FROM,
     pointsMax: Math.floor((amount * POINT_SHARE_MAX) / 10), // 쓸 수 있는 최대 포인트(P)
   };

@@ -7,15 +7,16 @@ const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(d
 const ENV = { CLASS_SUBSCRIPTION_ENABLED: 'true', TOSS_BILLING_SECRET_KEY: 'sk', TOSS_BILLING_CLIENT_KEY: 'ck',
   CLASS_SUBSCRIPTION_TERMS_URL: 'https://class-new.literstella.co.kr/subscribe#terms', CLASS_SUBSCRIPTION_TERMS_VERSION: 'sub-2026-12' };
 
-function world({ owned = 0, payStatus = 'ready', billingKey = null, payments = [], toss = {} } = {}) {
+function world({ owned = 0, ownedTheory = false, payStatus = 'ready', billingKey = null, payments = [], toss = {}, kind = 'first' } = {}) {
   const calls = { rpc: [], toss: [] };
   const sbFetch = async (_env, path, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
     if (path.startsWith('rpc/')) {
       const name = path.slice(4); calls.rpc.push([name, body]);
-      if (name === 'class_subscription_summary') return json({ subscription: null, payments, ownedOriginals: owned });
+      if (name === 'class_subscription_summary') return json({ subscription: null, payments, ownedOriginals: owned, ownedTheory });
       if (name === 'class_subscription_begin') return json({ ok: true, subscriptionId: 's1', customerKey: 'cus1', orderId: ORDER, amount: body.p_amount });
-      if (name === 'class_subscription_settle') return json({ ok: true, status: body.p_status === 'DONE' ? 'paid' : 'canceled', orderId: body.p_order_id });
+      if (name === 'class_subscription_settle') return json({ ok: true, kind, orderId: body.p_order_id,
+        status: body.p_status === 'DONE' ? 'paid' : body.p_status === 'CANCELED' ? 'canceled' : 'partial_canceled' });
       if (name === 'class_subscription_due') return json([{ orderId: ORDER, subscriptionId: 's1', userId: 'u1', billingKey: 'bk', customerKey: 'cus1', amount: 9900, plan: 'solo', cycle: 'month' }]);
       if (name === 'class_subscription_expire') return json(2);
       if (name === 'class_checkout_quote') return json({ ok: true, ownedCount: owned, complete: false });
@@ -29,7 +30,7 @@ function world({ owned = 0, payStatus = 'ready', billingKey = null, payments = [
     const u = String(url); calls.toss.push([u, init.method || 'GET', init.headers || {}]);
     if (u.endsWith('/billing/authorizations/issue')) return json(toss.issue || { billingKey: 'bk' }, toss.issue ? 400 : 200);
     if (u.includes('/billing/')) return toss.charge ? json(toss.charge.body, toss.charge.status) : json({ paymentKey: 'pk1', orderId: ORDER, status: 'DONE' });
-    if (u.includes('/payments/')) return json({ paymentKey: 'pk1', orderId: ORDER, totalAmount: toss.total ?? 99000, balanceAmount: toss.total ?? 99000, currency: 'KRW', status: 'DONE' });
+    if (u.includes('/payments/')) return json({ paymentKey: 'pk1', orderId: ORDER, totalAmount: toss.total ?? 99000, balanceAmount: toss.balance ?? toss.total ?? 99000, currency: 'KRW', status: toss.status || 'DONE' });
     return json({}, 404);
   };
   const deps = { requireUser: async () => ({ id: 'u1', emailConfirmed: true }), sbFetch, json };
@@ -59,6 +60,37 @@ await check('금액은 서버가 정한다 — 화면 금액이 다르면 거절
   assert.equal(ok.body.orderId, ORDER);
   assert.equal(w.calls.rpc.find(([k]) => k === 'class_subscription_begin')[1].p_amount, 77000);
   assert.equal((await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 77000, acceptedTermsVersion: 'old' })).body.error, 'terms_changed');
+});
+
+await check('핵심 이론을 소장으로 센다(DB 판정): 오리지널 2권 + 이론 = 66,000원 · 화면·DB 에는 할인에 센 권수 3', async () => {
+  const w = world({ owned: 2, ownedTheory: true });
+  const q = await w.call('quote', { plan: 'solo', cycle: 'year' });
+  assert.equal(q.body.amount, 66000); assert.equal(q.body.ownedCount, 3);
+  assert.equal(q.body.ownedOriginals, 2); assert.equal(q.body.ownedTheory, true);
+  const ok = await w.call('prepare', { plan: 'solo', cycle: 'year', expectedAmount: 66000, acceptedTermsVersion: 'sub-2026-12' });
+  assert.equal(ok.body.orderId, ORDER);
+  const begin = w.calls.rpc.find(([k]) => k === 'class_subscription_begin')[1];
+  assert.equal(begin.p_amount, 66000); assert.equal(begin.p_owned_count, 3);
+});
+
+await check('웹훅: 전액 취소 = 포인트 전부 반환(release) · 전환 결제 부분 취소 = 비율 반환(refund) · 첫 결제 부분 취소 = 기록만', async () => {
+  const hook = async (w) => {
+    const deps = { requireUser: async () => null, sbFetch: w.sbFetch, json };
+    const r = await classSubscription(new Request('https://x/api/class-subscription/webhook', { method: 'POST', body: JSON.stringify({ data: { paymentKey: 'pk1', orderId: ORDER } }) }), ENV, {}, 'webhook', deps);
+    return r.status;
+  };
+  const full = world({ kind: 'upgrade', toss: { status: 'CANCELED', balance: 0 } });
+  assert.equal(await hook(full), 200);
+  assert.ok(full.calls.rpc.some(([k]) => k === 'class_subscription_points_release'));
+  assert.ok(!full.calls.rpc.some(([k]) => k === 'class_subscription_points_refund'));
+  const part = world({ kind: 'upgrade', toss: { status: 'PARTIAL_CANCELED', balance: 40000 } });
+  assert.equal(await hook(part), 200);
+  assert.equal(part.calls.rpc.find(([k]) => k === 'class_subscription_settle')[1].p_canceled_amount, 59000);
+  assert.ok(part.calls.rpc.some(([k]) => k === 'class_subscription_points_refund'));
+  assert.ok(!part.calls.rpc.some(([k]) => k === 'class_subscription_points_release'));
+  const firstPart = world({ kind: 'first', toss: { status: 'PARTIAL_CANCELED', balance: 40000 } });
+  assert.equal(await hook(firstPart), 200);
+  assert.ok(!firstPart.calls.rpc.some(([k]) => /points_(refund|release)$/.test(k)));
 });
 
 await check('확정: 빌링키 발급 → 한 번 청구(주문 번호 = Idempotency-Key) → 토스에 다시 물어 반영', async () => {
