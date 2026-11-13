@@ -614,4 +614,176 @@ await check('회원 역할은 환불 함수를 직접 못 부른다', async () =
   } finally { await db.exec('reset role;'); }
 });
 
+// ── 2026-11-13 C: 야나완 성공 선물 '구독권'(개인 연간 1년) — 선물 코드 → 결제 없는 구독 행 ──
+//   운영 is_ls_admin() 정의 그대로(관리자 이메일 한 줄). 시험에서는 test.email 로 그 이메일을 흉내 낸다.
+await db.exec(`create function public.is_ls_admin() returns boolean language sql stable as $$ select coalesce(auth.jwt()->>'email','') = 'literbryanbae@gmail.com' $$;`);
+const GIFT = await readFile(new URL('./supabase/migrations/20261113130000_class_subscription_gift.sql', import.meta.url), 'utf8');
+await db.exec(GIFT); await db.exec(GIFT);
+const ADM = '00000000-0000-4000-8000-0000000000ad';
+const G1 = '00000000-0000-4000-8000-0000000000e1'; // 선물을 받아 쓰는 회원(무료 체험 안 함)
+const G2 = '00000000-0000-4000-8000-0000000000e2'; // 남이 쓴 코드를 넣어 보는 회원
+const G3 = '00000000-0000-4000-8000-0000000000e3'; // 틀린 코드를 계속 넣는 회원
+const G4 = '00000000-0000-4000-8000-0000000000e4'; // 이미 구독 중인 회원
+const G5 = '00000000-0000-4000-8000-0000000000e5'; // 무료로 써 본 회원이 선물을 쓴다 → 런칭 선물 달은 그대로 남는다
+await db.exec(`insert into auth.users(id, email) values ('${ADM}', 'literbryanbae@gmail.com'), ('${G1}', 'giftone@example.test'), ('${G2}', 'g2@example.test'),
+  ('${G3}', 'g3@example.test'), ('${G4}', 'g4@example.test'), ('${G5}', 'g5@example.test');
+  insert into public.class_trial_signups(user_id, kind) values ('${G5}', 'all');`);
+const GENV = { ...ENV, CLASS_SUBSCRIPTION_GIFT_ENABLED: 'true' };
+const gapi = async (uid, action, body, env = GENV) => {
+  const deps = { requireUser: async () => ({ id: uid, emailConfirmed: true }), sbFetch, json };
+  const r = await classSubscription(new Request(`https://x/api/class-subscription/${action}`, { method: 'POST', body: JSON.stringify(body || {}) }), env, {}, action, deps);
+  return { status: r.status, body: await r.json() };
+};
+const as = async (uid, email, sql) => {
+  await db.exec(`set test.uid = '${uid}'; set test.email = '${email}'; set role authenticated;`);
+  try { return (await db.query(sql)).rows[0]?.v; } finally { await db.exec(`reset role; set test.uid = ''; set test.email = '';`); }
+};
+const ADMQ = (sql) => as(ADM, 'literbryanbae@gmail.com', sql);
+const codeRow = async (c) => (await db.query(`select * from public.class_subscription_gift_codes where code = '${c}'`)).rows[0];
+const redeem = (uid, code, env = GENV, ver = 'sub-2026-12') => gapi(uid, 'gift-redeem', { code, acceptedTermsVersion: ver }, env);
+const pretty = (c) => `${c.slice(0, 4)}-${c.slice(4, 8)}-${c.slice(8)}`.toLowerCase();
+let codes;
+
+await check('선물 발급: 운영자만(1~20장) · 혼동 글자 없는 12자 · 회원은 admin_only · anon 은 실행 권한 없음', async () => {
+  await assert.rejects(as(G1, 'giftone@example.test', `select public.admin_class_subscription_gift_issue('yanawan66', 3) as v`), /admin_only/);
+  await assert.rejects(as(G1, 'giftone@example.test', `select public.admin_class_subscription_gift_list() as v`), /admin_only/);
+  await db.exec('set role anon;');
+  try { await assert.rejects(db.query(`select public.admin_class_subscription_gift_issue('yanawan66', 3)`), /permission denied/); } finally { await db.exec('reset role;'); }
+  assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan66', 21) as v`)).error, 'bad_count');
+  assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan66', 0) as v`)).error, 'bad_count');
+  assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('gold', 1) as v`)).error, 'bad_kind');
+  const r = await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan66', 6, '야나완 66일 성공', '2611') as v`);
+  assert.equal(r.ok, true); assert.equal(r.codes.length, 6); codes = r.codes;
+  for (const c of codes) assert.match(c, /^[A-HJKMNP-Z2-9]{12}$/);
+  assert.equal(new Set(codes).size, 6);
+  const row = await codeRow(codes[0]);
+  assert.equal(row.kind, 'yanawan66'); assert.equal(row.issued_by, 'literbryanbae@gmail.com'); assert.equal(row.redeemed_by, null);
+  assert.equal((await ADMQ(`select public.admin_class_subscription_gift_issue('yanawan100', 20) as v`)).codes.length, 20, '20장까지');
+});
+
+await check('선물 사용 스위치: 꺼져 있으면 gift_closed(판매 스위치와 별개) · 약관 변수가 없으면 닫힘 · 약관이 다르면 거절 · 코드는 그대로', async () => {
+  assert.deepEqual([(await redeem(G1, codes[0], ENV)).status, (await redeem(G1, codes[0], ENV)).body.error], [503, 'gift_closed']);
+  const noTerms = { ...GENV, CLASS_SUBSCRIPTION_TERMS_URL: '' };
+  assert.equal((await redeem(G1, codes[0], noTerms)).body.error, 'gift_closed');
+  assert.equal((await redeem(G1, codes[0], { ...GENV, CLASS_SUBSCRIPTION_ENABLED: 'false', TOSS_BILLING_SECRET_KEY: '' }, 'old')).body.error, 'terms_changed', '판매가 닫혀도 선물 길은 열린다(약관은 본다)');
+  assert.equal((await codeRow(codes[0])).redeemed_by, null);
+});
+
+await check('선물 사용: 소문자·하이픈도 받는다 · 결제 없는 연간 개인 구독(1년) · 청구할 것이 없고 해지 예약 상태 · 10권이 열린다', async () => {
+  const charges = toss.charges;
+  const r = await redeem(G1, pretty(codes[0]), { ...GENV, CLASS_SUBSCRIPTION_ENABLED: 'false' });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.ok, true);
+  const s = await sub(G1);
+  assert.deepEqual({ status: s.status, source: s.source, plan: s.plan, cycle: s.cycle, amount: s.amount, billing: s.billing_key, next: s.next_charge_at },
+    { status: 'active', source: 'gift', plan: 'solo', cycle: 'year', amount: 99000, billing: null, next: null });
+  assert.ok(s.cancel_requested_at, '기간이 끝나면 정리되게 해지 예약');
+  assert.equal(monthsBetween(s.current_period_start, s.current_period_end), 12);
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscription_payments where user_id = '${G1}'`)).rows[0].c, 0, '결제 행을 만들지 않는다');
+  assert.equal(toss.charges, charges);
+  assert.equal((await gateBooks('GIFTONE@example.test')).length, 10);
+  assert.equal(await access(G1, 'giftone@example.test', 'oz'), true);
+  const row = await codeRow(codes[0]);
+  assert.equal(row.redeemed_by, G1); assert.equal(row.subscription_id, s.id);
+  const st = (await gapi(G1, 'status')).body;
+  assert.equal(st.subscription.source, 'gift'); assert.equal(st.giftEnabled, true); assert.equal(st.conversion, null, '선물은 전환 차감에 잡히지 않는다');
+  await db.exec(`set test.uid = '${G1}'; set role authenticated;`);
+  try { assert.equal((await db.query('select public.my_class_subscription() as v')).rows[0].v.subscription.source, 'gift'); } finally { await db.exec(`reset role; set test.uid = '';`); }
+});
+
+await check('같은 코드: 같은 회원이 다시 보내면 같은 답 · 다른 회원은 used_code · 선물 구독 중에 다른 코드는 already_subscribed(코드는 남는다)', async () => {
+  const again = await redeem(G1, codes[0]);
+  assert.equal(again.status, 200); assert.equal(again.body.again, true);
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscriptions where user_id = '${G1}'`)).rows[0].c, 1);
+  const used = await redeem(G2, codes[0]);
+  assert.equal(used.status, 400); assert.equal(used.body.error, 'used_code');
+  const dup = await redeem(G1, codes[1]);
+  assert.equal(dup.status, 409); assert.equal(dup.body.error, 'already_subscribed');
+  assert.equal((await codeRow(codes[1])).redeemed_by, null);
+});
+
+await check('결제 구독 중인 회원: already_subscribed · 코드를 소진하지 않는다 · 가입하다 만(pending) 행은 지우고 선물을 받는다', async () => {
+  await join(G4, 'solo', 'month');
+  const r = await redeem(G4, codes[1]);
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'already_subscribed');
+  assert.equal((await codeRow(codes[1])).redeemed_by, null);
+  assert.equal((await sub(G4)).source, 'paid');
+  // G2: 주문서만 만들고 카드 등록 전(pending) → 선물을 쓰면 그 행을 지우고 선물 구독
+  const p = await api(G2, 'prepare', { plan: 'solo', cycle: 'month', expectedAmount: 9900, acceptedTermsVersion: 'sub-2026-12' });
+  assert.equal(p.status, 200);
+  assert.equal((await sub(G2)).status, 'pending');
+  const g = await redeem(G2, codes[1]);
+  assert.equal(g.status, 200, JSON.stringify(g.body));
+  const rows = (await db.query(`select status, source from public.class_subscriptions where user_id = '${G2}'`)).rows;
+  assert.deepEqual(rows, [{ status: 'active', source: 'gift' }]);
+});
+
+await check('선물 구독: 해지는 그대로 ok · 연간 전환 견적 없음 · 환불 견적 no_payment · 크론이 청구하지 않는다', async () => {
+  const c = await gapi(G1, 'cancel');
+  assert.equal(c.status, 200); assert.equal(c.body.ok, true);
+  assert.equal((await gapi(G1, 'upgrade-quote', {})).body.error, 'no_monthly_subscription');
+  assert.equal((await refundQuote(G1)).error, 'no_payment');
+  await db.exec(`update public.class_subscriptions set next_charge_at = now() - interval '1 minute' where source = 'gift'`); // 누가 되살려도
+  const charges = toss.charges;
+  const out = await chargeDueSubscriptions(ENV, { sbFetch });
+  assert.equal(out.due, 0); assert.equal(toss.charges, charges);
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscription_payments p join public.class_subscriptions s on s.id = p.subscription_id where s.source = 'gift'`)).rows[0].c, 0);
+  await db.exec(`update public.class_subscriptions set next_charge_at = null where source = 'gift'`);
+});
+
+await check('런칭 선물·올인원 전환 차감에 선물이 잡히지 않는다', async () => {
+  const r = await redeem(G5, codes[2]);
+  assert.equal(r.status, 200);
+  assert.equal((await db.query(`select private.class_subscription_bonus_months('${G5}', 'solo', 'year') as m`)).rows[0].m, launchOpen ? 3 : 0, '선물을 써도 첫 결제의 더 드리는 달은 남는다');
+  const q = (await db.query(`select public.class_checkout_quote('${G5}') as v`)).rows[0].v;
+  assert.equal(q.subscriptionCredit, 0); assert.equal(q.amount, 398000);
+});
+
+await check('틀린 코드 10번 → too_many_attempts(맞는 코드도 막힌다) · 한 시간이 지나면 다시 · 성공은 세지 않는다', async () => {
+  for (let i = 0; i < 10; i++) {
+    const r = await redeem(G3, i % 2 ? 'ABCD-EFGH-JKMN' : 'not a code!');
+    assert.equal(r.status, 400); assert.equal(r.body.error, 'invalid_code');
+  }
+  const blocked = await redeem(G3, codes[3]);
+  assert.equal(blocked.status, 429); assert.equal(blocked.body.error, 'too_many_attempts');
+  assert.equal((await codeRow(codes[3])).redeemed_by, null);
+  const heads = (await db.query(`select code_head from public.class_subscription_gift_attempts where user_id = '${G3}'`)).rows.map((x) => x.code_head);
+  assert.ok(heads.every((h) => h.length <= 4), '넣은 코드 전체를 남기지 않는다');
+  await db.exec(`update public.class_subscription_gift_attempts set created_at = created_at - interval '61 minutes' where user_id = '${G3}'`);
+  const ok = await redeem(G3, codes[3]);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal((await db.query(`select count(*)::int as c from public.class_subscription_gift_attempts where user_id = '${G3}'`)).rows[0].c, 10, '성공은 기록하지 않는다');
+});
+
+await check('만료된 코드는 expired_code · 조회는 사용한 회원 이메일을 가린다', async () => {
+  await db.exec(`update public.class_subscription_gift_codes set expires_at = now() - interval '1 minute' where code = '${codes[4]}'`);
+  const W2 = '00000000-0000-4000-8000-0000000000e6';
+  await db.exec(`insert into auth.users(id, email) values ('${W2}', 'w2@example.test')`);
+  const r = await redeem(W2, codes[4]);
+  assert.equal(r.status, 400); assert.equal(r.body.error, 'expired_code');
+  const list = await ADMQ(`select public.admin_class_subscription_gift_list() as v`);
+  const item = list.items.find((x) => x.code === codes[0]);
+  assert.equal(item.redeemed, true); assert.equal(item.redeemedBy, 'gi***@example.test'); assert.equal(item.issuedTo, '야나완 66일 성공');
+  assert.ok(!JSON.stringify(list).includes('giftone@'), '전체 이메일이 나가지 않는다');
+  assert.equal(list.items.find((x) => x.code === codes[5]).redeemed, false);
+});
+
+await check('기간이 끝나면 정리 크론이 끝내고 강의가 닫힌다 · 그 뒤 새 가입이 된다', async () => {
+  await db.exec(`update public.class_subscriptions set current_period_end = now() - interval '1 minute' where user_id = '${G1}'`);
+  assert.equal((await gateBooks('giftone@example.test')).length, 0, '크론 전이라도 기간이 끝나면 닫힌다');
+  await chargeDueSubscriptions(ENV, { sbFetch });
+  assert.equal((await sub(G1)).status, 'canceled');
+  const j = await join(G1, 'solo', 'month');
+  assert.equal(j.c.body.status, 'paid'); assert.equal((await sub(G1)).source, 'paid');
+});
+
+await check('회원 역할은 선물 사용 함수·선물 표를 직접 못 본다', async () => {
+  await db.exec(`set test.uid = '${G2}'; set role authenticated;`);
+  try {
+    await assert.rejects(db.query(`select public.class_subscription_gift_redeem('${G2}', '${codes[5]}', 'v', 'u')`), /permission denied/);
+    await assert.rejects(db.query(`select * from public.class_subscription_gift_codes`), /permission denied/);
+    await assert.rejects(db.query(`select * from public.class_subscription_gift_attempts`), /permission denied/);
+  } finally { await db.exec(`reset role; set test.uid = '';`); }
+  assert.equal((await codeRow(codes[5])).redeemed_by, null);
+});
+
 console.log(`class-subscription-db-test: ${n} checks passed (토스 청구 ${toss.charges}회)`);

@@ -1,4 +1,4 @@
-// 구독 정기결제(토스 빌링) — /api/class-subscription/{quote,prepare,confirm,status,cancel,upgrade-quote,upgrade,webhook}
+// 구독 정기결제(토스 빌링) — /api/class-subscription/{quote,prepare,confirm,status,cancel,upgrade-quote,upgrade,gift-redeem,webhook}
 //   🔴 아직 진입 모듈에 연결하지 않았다(미배포). 여는 순서 = LIVE-SOURCE.md '구독 결제' 절.
 //   금액은 서버가 정한다(class-subscription-pricing.mjs). 화면이 보낸 금액은 '같은지'만 본다.
 //   카드 정보는 이 서버를 지나가지 않는다 — 토스 창이 authKey 를 주고, 서버가 그것으로 빌링키를 받는다.
@@ -75,9 +75,21 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     }
     const user = await requireUser(req, env);
     if (!user?.id || !user.emailConfirmed) return reply({ ok: false, error: 'login_required' }, 401);
-    if (!['quote', 'prepare', 'confirm', 'status', 'cancel', 'upgrade-quote', 'upgrade'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
+    if (!['quote', 'prepare', 'confirm', 'status', 'cancel', 'upgrade-quote', 'upgrade', 'gift-redeem'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
     const tm = terms(env);
     const enabled = env.CLASS_SUBSCRIPTION_ENABLED === 'true' && !!env.TOSS_BILLING_SECRET_KEY && !!env.TOSS_BILLING_CLIENT_KEY && !!tm;
+    // 선물 구독권(야나완 성공 선물) — 판매 스위치와 별개. 결제가 없으니 토스 키는 보지 않고, 약관 변수는 있어야 열린다.
+    const giftEnabled = env.CLASS_SUBSCRIPTION_GIFT_ENABLED === 'true' && !!tm;
+    if (action === 'gift-redeem') {
+      if (!giftEnabled) return reply({ ok: false, error: 'gift_closed' }, 503);
+      const g = await req.json().catch(() => ({}));
+      if (g.acceptedTermsVersion !== tm.version) return reply({ ok: false, error: 'terms_changed' }, 409);
+      if (typeof g.code !== 'string' || !g.code.trim() || g.code.length > 40) return reply({ ok: false, error: 'invalid_code' }, 400);
+      const r = await t.rpc('gift_redeem', { p_user_id: user.id, p_code: g.code, p_terms_version: tm.version, p_terms_url: tm.url });
+      const status = r.ok ? 200 : r.error === 'too_many_attempts' ? 429 : r.error === 'login_required' ? 401
+        : ['invalid_code', 'used_code', 'expired_code'].includes(r.error) ? 400 : 409;
+      return reply(r, status);
+    }
     const summary = await t.rpc('summary', { p_user_id: user.id });
     const owned = Number(summary?.ownedOriginals) || 0;
     // 핵심 이론을 소장으로 세는가 — 판정은 DB 한 곳(올인원 결제와 같은 규칙, 운영자 2026-11-13). 화면·DB 에는 '할인에 센 권수'를 넘긴다.
@@ -92,7 +104,7 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
       const conversion = ownedAll?.ok && !ownedAll.complete
         ? conversionQuote({ ownedCount: ownedAll.ownedCount, payments: summary?.payments || [] }) : null;
-      return reply({ ok: true, subscription: summary?.subscription || null, checkoutEnabled: enabled,
+      return reply({ ok: true, subscription: summary?.subscription || null, checkoutEnabled: enabled, giftEnabled, terms: tm,
         conversion: conversion && conversion.credit > 0 ? conversion : null });
     }
     if (action === 'cancel') {

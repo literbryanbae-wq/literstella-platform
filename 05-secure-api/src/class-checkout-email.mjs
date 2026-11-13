@@ -8,6 +8,10 @@ export function receiptUrl(value) {
  try { const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&
  (u.hostname==='tosspayments.com'||u.hostname.endsWith('.tosspayments.com'))?u.href:null; } catch{return null;}
 }
+// 0원 주문의 '결제 기록' 대신 — 토스에 결제가 없으니 주문 행으로 같은 모양을 만든다(지급 시각 = 주문이 paid 가 된 때).
+export function freePaymentRecord(order) {
+ return {orderId:order.id,paymentKey:null,totalAmount:0,currency:'KRW',status:'DONE',approvedAt:order.updated_at,method:'결제 없음'};
+}
 export function renderCheckoutEmail(order,payment,audience,env) {
  const admin=audience==='admin';const to=admin?env.ADMIN_EMAIL:order.email;
  if(!validEmail(to)||!env.RESEND_FROM||/[\r\n]/.test(env.RESEND_FROM))throw Error('mail_configuration');
@@ -16,20 +20,26 @@ export function renderCheckoutEmail(order,payment,audience,env) {
  const at=date.toLocaleString('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
  const method=payment.easyPay?.provider||payment.method||'결제';
  const courses=order.missing_books.map(x=>NAMES[x]||x).join(', ');
- const subject=admin?`[리터스텔라] 결제 완료 · ${won(order.amount)}`:'[리터스텔라] 결제 완료 · 수강을 시작해 주세요';
+ // 0원 주문(구독료 차감으로 결제 없이 지급 — class_checkout_grant_free)은 결제·영수증이 없다.
+ const free=!order.payment_key&&Number(order.amount)===0;
+ const subject=admin?`[리터스텔라] ${free?'수강권 연결 완료':'결제 완료'} · ${won(order.amount)}`:`[리터스텔라] ${free?'수강권이 열렸어요':'결제 완료'} · 수강을 시작해 주세요`;
  const book=order.product_code?.match(/^class-(\w+)-lifetime$/)?.[1];
  if(book&&!NAMES[book])throw Error('mail_configuration');
- const rows=[['상품',book?`${NAMES[book]} · 평생소장`:'올인원 평생소장 · 회원 전환'],['결제 금액',won(order.amount)],...(!book?[['기존 소장 할인',won(398000-order.amount)]]:[]),['결제수단',method],['결제일시',at+' (한국시간)'],['주문번호',order.id],['수강 계정',order.email]];
+ // 올인원 할인 = 기존 소장(권당 50,000원) + 12월 31일까지 낸 구독료. 소장 권수를 모르는 옛 주문은 예전처럼 한 줄.
+ const ownedOff=Array.isArray(order.owned_books)?Math.min(order.owned_books.length*50000,398000):null;
+ const subOff=ownedOff===null?0:Math.max(0,398000-ownedOff-Number(order.amount));
+ const discounts=book?[]:ownedOff===null?[['기존 소장 할인',won(398000-order.amount)]]:[...(ownedOff>0?[['기존 소장 할인',won(ownedOff)]]:[]),...(subOff>0?[['구독료 차감',won(subOff)]]:[])];
+ const rows=[['상품',book?`${NAMES[book]} · 평생소장`:'올인원 평생소장 · 회원 전환'],[free?'결제할 금액':'결제 금액',won(order.amount)],...discounts,['결제수단',free?'결제 없음(0원)':method],[free?'연결 일시':'결제일시',at+' (한국시간)'],['주문번호',order.id],['수강 계정',order.email]];
  if(admin)rows.push(['연결 결과','수강권 연결 완료'],['추가 연결 강의',courses]);
  const button=(url,label)=>`<a href="${escape(url)}" style="display:inline-block;background:#c8a84b;color:#161b25;padding:13px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">${label}</a>`;
  const body=`<h1 style="font-size:22px;line-height:1.4;margin:0 0 16px;word-break:keep-all;">${admin?'결제·수강 연결 완료':'수강권이 열렸어요'}</h1>`+
  `<table role="presentation" style="width:100%;font-size:14px;border-collapse:collapse;">${rows.map(([k,v])=>`<tr><td style="padding:6px 8px 6px 0;vertical-align:top;white-space:nowrap;color:#666;">${escape(k)}</td><td style="padding:6px 0;word-break:break-word;">${escape(v)}</td></tr>`).join('')}</table>`+
  (admin?`<p>주문번호로 결제·수강권 처리 내역을 확인해 주세요.</p>`:`<p>결제한 계정으로 로그인한 뒤, 강의실에서 원하는 강의를 선택하세요. 기존 소장 강의도 그대로 이용할 수 있어요.</p><p>${button(CLASS+'/room','강의실에서 시작하기')}</p>`)+
- `<p>${receipt?`<a href="${escape(receipt)}">결제 영수증 보기</a>`:'영수증 확인이 필요하시면 카카오 채널로 문의해 주세요.'}</p>`+
+ `<p>${receipt?`<a href="${escape(receipt)}">결제 영수증 보기</a>`:free?'결제한 금액이 없어 영수증은 발행되지 않아요.':'영수증 확인이 필요하시면 카카오 채널로 문의해 주세요.'}</p>`+
  `<p style="font-size:13px;"><a href="${CLASS}/library">내 서재</a> · <a href="${CLASS}/refund">구매·환불 안내</a> · <a href="${KAKAO}">카카오톡 문의</a></p>`;
  // Match the existing transactional brand shell, with current class links and no promotion.
  const html=`<!doctype html><html lang="ko"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(subject)}</title></head><body style="margin:0;background:#f4f1ea;font-family:Arial,'Apple SD Gothic Neo',sans-serif;color:#1d2433;line-height:1.7;"><table role="presentation" width="100%"><tr><td align="center" style="padding:24px 12px;"><table role="presentation" width="100%" style="max-width:480px;background:#fffdf8;border:1px solid #e8e2d4;"><tr><td style="padding:24px;text-align:center;"><img src="https://challenge.literstella.co.kr/logo-symbol.png" alt="" width="46" height="46"><br><img src="https://challenge.literstella.co.kr/logo-literstella-en.png" alt="LiterStella" height="22"></td></tr><tr><td style="padding:0 24px 24px;">${body}</td></tr><tr><td style="padding:16px 24px;border-top:1px solid #e8e2d4;font-size:12px;color:#666;">리터스텔라 · 결제 및 수강 안내<br>이 메일은 주문 처리에 관한 안내입니다.</td></tr></table></td></tr></table></body></html>`;
- return {from:env.RESEND_FROM,to:[to],subject,html,text:[subject,...rows.map(([k,v])=>`${k}: ${v}`),admin?'수강권 연결 완료':`결제한 계정으로 로그인 → 강의실에서 강의 선택\n${CLASS}/room`,receipt?`영수증: ${receipt}`:'영수증: 카카오 채널 문의',`구매·환불 안내: ${CLASS}/refund`,`카카오 문의: ${KAKAO}`].join('\n'),tags:[{name:'category',value:'class_checkout_transactional'},{name:'audience',value:audience}]};
+ return {from:env.RESEND_FROM,to:[to],subject,html,text:[subject,...rows.map(([k,v])=>`${k}: ${v}`),admin?'수강권 연결 완료':`결제한 계정으로 로그인 → 강의실에서 강의 선택\n${CLASS}/room`,receipt?`영수증: ${receipt}`:free?'영수증: 없음(0원)':'영수증: 카카오 채널 문의',`구매·환불 안내: ${CLASS}/refund`,`카카오 문의: ${KAKAO}`].join('\n'),tags:[{name:'category',value:'class_checkout_transactional'},{name:'audience',value:audience}]};
 }
 async function db(env,path,init={}){
  const r=await fetch(env.SUPABASE_URL+'/rest/v1/'+path,{...init,headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+env.SUPABASE_SERVICE_ROLE_KEY,'Content-Type':'application/json',...init.headers},signal:AbortSignal.timeout(5000)});
@@ -45,8 +55,15 @@ async function runOne(env,orderId){
  const {job:j,order:o}=claimed;
  const done=patch=>update(env,j,{...patch,lease_token:null,lease_until:null});
  try{
-  const r=await fetch('https://api.tosspayments.com/v1/payments/'+encodeURIComponent(o.payment_key),{headers:{Authorization:'Basic '+btoa(env.TOSS_CLASS_SECRET_KEY+':')},signal:AbortSignal.timeout(5000)});
-  if(!r.ok)throw Error('provider_unavailable');const p=await r.json();
+  let p;
+  if(!o.payment_key){
+   // 결제 키 없는 주문 = 0원 지급만 있다. 그 밖이면 사람이 본다(토스에 'null' 을 묻지 않는다).
+   if(o.amount!==0){await done({status:'review',last_error:'payment_missing'});return true;}
+   p=freePaymentRecord(o);
+  }else{
+   const r=await fetch('https://api.tosspayments.com/v1/payments/'+encodeURIComponent(o.payment_key),{headers:{Authorization:'Basic '+btoa(env.TOSS_CLASS_SECRET_KEY+':')},signal:AbortSignal.timeout(5000)});
+   if(!r.ok)throw Error('provider_unavailable');p=await r.json();
+  }
   if(p.orderId!==o.id||p.paymentKey!==o.payment_key||p.totalAmount!==o.amount||p.currency!=='KRW'){
    await done({status:'review',last_error:'payment_mismatch'});return true;
   }

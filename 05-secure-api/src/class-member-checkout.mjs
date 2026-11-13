@@ -55,9 +55,18 @@ export async function classMemberCheckout(req, env, cors, action, { requireUser,
     }
     const user = await requireUser(req, env);
     if (!user?.id || !user.emailConfirmed) return reply({ ok: false, error: 'login_required' }, 401);
-    if (!['quote','prepare','confirm','status'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
+    if (!['quote','prepare','confirm','status','free'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
     const terms = purchaseTerms(env);
     const publicEnabled = env.CLASS_MEMBER_CHECKOUT_ENABLED === 'true';
+    // 0원(구독료 차감 등) 지급 — 토스를 거치지 않으므로 토스 키는 보지 않는다. 판매 스위치·약관은 prepare 와 같다.
+    if (action === 'free') {
+      if (productCode !== 'class-stella-member-upgrade') return reply({ ok: false, error: 'not_found' }, 404);
+      if (!publicEnabled || !terms) return reply({ ok: false, error: 'checkout_closed' }, 503);
+      const b = await req.json();
+      if (b.acceptedTermsVersion !== terms.version) return reply({ ok: false, error: 'terms_changed' }, 409);
+      const result = await rpc('grant_free', { p_user_id: user.id, p_terms_version: terms.version, p_terms_url: terms.url });
+      return reply(result, result.ok ? 200 : 409);
+    }
     const pilot = env.CLASS_MEMBER_CHECKOUT_PILOT;
     const pilotAllowed = pilot && user.id === pilot.userId &&
       Number.isSafeInteger(pilot.amount) && pilot.amount > 0 &&
@@ -73,7 +82,9 @@ export async function classMemberCheckout(req, env, cors, action, { requireUser,
       if (!publicEnabled && q.amount !== pilot?.amount) enabled = false;
       const [pending] = await findOrders(`user_id=eq.${encodeURIComponent(user.id)}&status=in.(confirming,partial_refund_review)&order=created_at.desc`);
       const pendingBook = pending?.product_code?.match(/^class-([a-z0-9]+)-lifetime$/)?.[1];
-      return reply({ ...q, pendingOrder: pending ? { orderId: pending.id, status: pending.status, checkoutPath: pendingBook ? `/purchase/course/${pendingBook}` : '/purchase/member' } : null,
+      // free = 결제 없이 받는 길(0원). 다 가진 회원(complete)도 금액이 0 이라 eligible 을 같이 본다.
+      const free = q.ok === true && q.eligible === true && q.amount === 0;
+      return reply({ ...q, free, pendingOrder: pending ? { orderId: pending.id, status: pending.status, checkoutPath: pendingBook ? `/purchase/course/${pendingBook}` : '/purchase/member' } : null,
         terms, checkoutEnabled: enabled, clientKey: enabled ? (env.TOSS_CLASS_CLIENT_KEY || CLIENT_KEY) : null });
     }
     const b = await req.json();
