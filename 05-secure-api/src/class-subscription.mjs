@@ -1,4 +1,4 @@
-// 구독 정기결제(토스 빌링) — /api/class-subscription/{quote,prepare,confirm,status,cancel,webhook}
+// 구독 정기결제(토스 빌링) — /api/class-subscription/{quote,prepare,confirm,status,cancel,upgrade-quote,upgrade,webhook}
 //   🔴 아직 진입 모듈에 연결하지 않았다(미배포). 여는 순서 = LIVE-SOURCE.md '구독 결제' 절.
 //   금액은 서버가 정한다(class-subscription-pricing.mjs). 화면이 보낸 금액은 '같은지'만 본다.
 //   카드 정보는 이 서버를 지나가지 않는다 — 토스 창이 authKey 를 주고, 서버가 그것으로 빌링키를 받는다.
@@ -72,7 +72,7 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     }
     const user = await requireUser(req, env);
     if (!user?.id || !user.emailConfirmed) return reply({ ok: false, error: 'login_required' }, 401);
-    if (!['quote', 'prepare', 'confirm', 'status', 'cancel'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
+    if (!['quote', 'prepare', 'confirm', 'status', 'cancel', 'upgrade-quote', 'upgrade'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
     const tm = terms(env);
     const enabled = env.CLASS_SUBSCRIPTION_ENABLED === 'true' && !!env.TOSS_BILLING_SECRET_KEY && !!env.TOSS_BILLING_CLIENT_KEY && !!tm;
     const summary = await t.rpc('summary', { p_user_id: user.id });
@@ -93,9 +93,49 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
       const r = await t.rpc('cancel', { p_user_id: user.id });
       return reply(r, r.ok ? 200 : 409);
     }
+    if (action === 'upgrade-quote' || action === 'upgrade') {
+      // 월 → 연간 전환: 이번 달 남은 날짜만큼 빼고, 등록된 카드로 바로 청구한다(운영자 2026-11-13).
+      const plan = b.plan || summary?.subscription?.plan;
+      const yq = subscriptionQuote({ plan, cycle: 'year', ownedCount: owned });
+      if (!yq.ok) return reply(yq, 400);
+      const uq = await t.rpc('upgrade_quote', { p_user_id: user.id });
+      if (!uq.ok) return reply(uq, 409);
+      const pointsMax = Math.min(Math.max(0, yq.pointsMax - (Number(uq.pointsUsedThisPeriod) || 0)), balance);
+      const view = { ok: true, plan, cycle: 'year', listAmount: yq.listAmount, amount: yq.amount, ownedDiscount: yq.ownedDiscount, ownedCount: owned,
+        credit: uq.credit, daysLeft: uq.daysLeft, payAmount: yq.amount - uq.credit, pointsMax, pointsBalance: balance, terms: tm, checkoutEnabled: enabled };
+      if (action === 'upgrade-quote') return reply(view);
+      if (!enabled) return reply({ ok: false, error: 'checkout_closed' }, 503);
+      if (b.acceptedTermsVersion !== tm.version) return reply({ ok: false, error: 'terms_changed' }, 409);
+      if (b.expectedAmount !== view.payAmount) return reply({ ok: false, error: 'amount_mismatch', amount: view.payAmount }, 409);
+      const use = b.usePoints === undefined || b.usePoints === null ? 0 : b.usePoints;
+      if (!Number.isInteger(use) || use < 0 || use > Math.max(0, yq.pointsMax - (Number(uq.pointsUsedThisPeriod) || 0))) return reply({ ok: false, error: 'bad_points' }, 400);
+      if (use > balance) return reply({ ok: false, error: 'points_short', balance }, 409);
+      const o = await t.rpc('upgrade_begin', { p_user_id: user.id, p_plan: plan, p_amount: yq.amount, p_list_amount: yq.listAmount,
+        p_owned_count: owned, p_terms_version: tm.version, p_terms_url: tm.url, p_points: use });
+      if (!o.ok) return reply(o, 409);
+      if (o.usePoints > 0) {
+        const held = await t.rpc('points_reserve', { p_order_id: o.orderId });
+        if (!held.ok) { await t.rpc('fail', { p_order_id: o.orderId, p_code: 'POINTS_SHORT' }); return reply({ ok: false, error: held.error || 'points_short' }, 409); }
+      }
+      const res = await t.charge({ billingKey: o.billingKey, customerKey: o.customerKey, orderId: o.orderId, amount: o.cardAmount, orderName: orderName(plan, 'year') });
+      if (!res.ok && res.pay.code !== 'ALREADY_PROCESSED_PAYMENT') {
+        if (res.pay.code && !/TIMEOUT|UNKNOWN|PROVIDER_ERROR|FAILED_INTERNAL/.test(res.pay.code)) {
+          await t.rpc('fail', { p_order_id: o.orderId, p_code: res.pay.code });
+          if (o.usePoints > 0) await t.rpc('points_release', { p_order_id: o.orderId });
+          return reply({ ok: false, error: 'card_declined' }, 402); // 월 구독은 그대로 이어진다
+        }
+        return reply({ ok: false, error: 'payment_pending' }, 202);
+      }
+      if (!res.pay.paymentKey) return reply({ ok: false, error: 'payment_pending' }, 202);
+      const result = await t.settle(await t.getPayment(res.pay.paymentKey), o.orderId, o.cardAmount);
+      return reply(result.ok ? { ...result, credit: o.credit, cardAmount: o.cardAmount } : result, result.ok ? 200 : 409);
+    }
     const q = subscriptionQuote({ plan: b.plan, cycle: b.cycle, ownedCount: owned });
     if (action === 'quote') {
       if (!q.ok) return reply(q, 400);
+      // 무료로 먼저 써 본 분의 첫 결제에 더 드리는 달(런칭 선물) — 못 읽으면 0 으로 보여 주고, 실제 적용은 주문을 만들 때 DB 가 다시 정한다.
+      const bonus = await t.rpc('bonus', { p_user_id: user.id, p_plan: b.plan, p_cycle: b.cycle }).catch(() => null);
+      q.bonusMonths = Number(bonus?.months) || 0;
       return reply({ ...q, pointsMax: Math.min(q.pointsMax, balance), pointsBalance: balance, ownedCount: owned, terms: tm, checkoutEnabled: enabled, subscription: summary?.subscription || null,
         clientKey: enabled ? env.TOSS_BILLING_CLIENT_KEY : null });
     }

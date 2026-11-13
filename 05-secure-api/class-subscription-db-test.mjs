@@ -13,6 +13,8 @@ const U = '00000000-0000-4000-8000-0000000000a1'; // 키다리 1권 소장 → �
 const V = '00000000-0000-4000-8000-0000000000b2'; // 소장 없음 → 월 함께 읽기
 const W = '00000000-0000-4000-8000-0000000000c3'; // 구독 안 함(대조군)
 const P = '00000000-0000-4000-8000-0000000000d4'; // 포인트 5,000P 보유 → 함께 읽기 연간을 포인트 + 카드로
+const T = '00000000-0000-4000-8000-0000000000f6'; // 무료로 먼저 써 본 회원 → 월 개인(+1달) → 연간 전환
+const T2 = '00000000-0000-4000-8000-0000000000a7'; // 무료로 먼저 써 본 회원 → 연간 함께 읽기(+6달)
 const PM = '00000000-0000-4000-8000-0000000000e5'; // P 의 회원 행(public.users.id — 포인트 원장은 이 id 를 쓴다)
 
 // ── 운영 DB 에 이미 있는 것들의 최소 모형(함수 본문은 2026-11-12 운영 정의를 그대로 옮김) ──
@@ -79,7 +81,7 @@ begin
     'newBuyer',v_n=0,'theoryIncluded',v_theory,
     'existingRequest',v_blocked);
 end $fn$;
-  insert into auth.users(id, email) values ('${U}', 'u@example.test'), ('${V}', 'v@example.test'), ('${W}', 'w@example.test'), ('${P}', 'p@example.test');
+  insert into auth.users(id, email) values ('${U}', 'u@example.test'), ('${V}', 'v@example.test'), ('${W}', 'w@example.test'), ('${P}', 'p@example.test'), ('${T}', 't@example.test'), ('${T2}', 't2@example.test');
   -- 포인트 원장(운영 제약 그대로: 사유 목록에 구독이 없고 한 줄 한도 3,000P — 포인트 초안이 넓힌다)
   create table public.users(id uuid primary key, auth_uid uuid);
   create table public.point_transactions(id bigserial primary key, user_id uuid not null references public.users(id), season_id text,
@@ -101,6 +103,10 @@ await db.exec(await readFile(new URL('./supabase/migrations/20261112100000_class
 // 포인트 초안은 맨 뒤에(예전 8칸짜리 가입 함수를 지우고 9칸짜리로 바꾼다) · 두 번 돌려도 된다
 const POINTS = await readFile(new URL('./supabase/migrations/20261113090000_class_subscription_points.sql', import.meta.url), 'utf8');
 await db.exec(POINTS); await db.exec(POINTS);
+// 런칭 선물(더 드리는 달) + 월 → 연간 전환 — 맨 뒤에 · 두 번 돌려도 된다
+const LAUNCH = await readFile(new URL('./supabase/migrations/20261113100000_class_subscription_launch_upgrade.sql', import.meta.url), 'utf8');
+await db.exec(LAUNCH); await db.exec(LAUNCH);
+await db.exec(`insert into public.class_trial_signups(user_id, kind) values ('${T}', 'all'), ('${T2}', 'all')`);
 
 // ── 서버가 쓰는 DB 통로(PostgREST 흉내) ──
 const lit = (v) => (v === null || v === undefined ? 'null' : typeof v === 'number' ? String(v) : `'${String(v).replace(/'/g, "''")}'`);
@@ -382,6 +388,79 @@ await check('첫 결제가 전액 취소(환불)되면 쓴 포인트를 돌려�
   const deps = { requireUser: async () => null, sbFetch, json };
   const r = await classSubscription(new Request('https://x/api/class-subscription/webhook', { method: 'POST', body: JSON.stringify({ data: { paymentKey: pay.payment_key, orderId: pOrder } }) }), ENV, {}, 'webhook', deps);
   assert.equal(r.status, 200); assert.equal(await balance(), 5000);
+});
+
+// ── 런칭 선물: 무료로 먼저 써 본 분의 첫 결제에 달을 더 ──
+const launchOpen = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10) <= '2026-12-31';
+const monthsBetween = (a, b) => { const x = new Date(a), y = new Date(b); return (y.getUTCFullYear() - x.getUTCFullYear()) * 12 + (y.getUTCMonth() - x.getUTCMonth()); };
+const lastPay = async (uid) => (await db.query(`select * from public.class_subscription_payments where user_id = '${uid}' order by created_at desc, period_end desc limit 1`)).rows[0];
+
+await check('더 드리는 달: 써 본 회원의 첫 결제 — 월 개인 +1달 · 연간 함께 +6달 · 금액은 그대로', async () => {
+  const q = (await api(T, 'quote', { plan: 'solo', cycle: 'month' })).body;
+  assert.equal(q.bonusMonths, launchOpen ? 1 : 0); assert.equal(q.amount, 9900);
+  const j = await join(T, 'solo', 'month');
+  assert.equal(j.c.body.status, 'paid'); assert.equal(toss.lastAmount, 9900);
+  const s1 = await sub(T);
+  assert.equal(monthsBetween(s1.current_period_start, s1.current_period_end), launchOpen ? 2 : 1);
+  assert.equal((await lastPay(T)).bonus_months, launchOpen ? 1 : 0);
+  const j2 = await join(T2, 'together', 'year');
+  assert.equal(j2.q.bonusMonths, launchOpen ? 6 : 0); assert.equal(toss.lastAmount, 149000);
+  const s2 = await sub(T2);
+  assert.equal(monthsBetween(s2.current_period_start, s2.current_period_end), launchOpen ? 18 : 12);
+});
+
+await check('더 드리는 달은 한 번만 · 써 보지 않은 회원에게는 없다', async () => {
+  assert.equal((await api(T, 'quote', { plan: 'solo', cycle: 'year' })).body.bonusMonths, 0, '이미 결제한 적이 있다');
+  assert.equal((await api(W, 'quote', { plan: 'together', cycle: 'year' })).body.bonusMonths, 0, '무료로 써 본 적이 없다');
+  assert.equal((await db.query(`select private.class_subscription_bonus_months('${W}', 'together', 'year') as m`)).rows[0].m, 0);
+});
+
+// ── 월 → 연간 전환: 이번 달 남은 날짜만큼 뺀다 ──
+await check('전환 견적: 연간 99,000원에서 남은 날짜 값어치를 뺀다(100원 아래 버림) · 월 구독이 아니면 견적이 없다', async () => {
+  // 기간의 정확히 절반이 지난 것으로 만든다 → 9,900원의 절반 4,950 → 4,900원
+  await db.exec(`update public.class_subscription_payments set period_start = now() - interval '10 days', period_end = now() + interval '10 days' where user_id = '${T}' and status = 'paid';
+                 update public.class_subscriptions set current_period_start = (select period_start from public.class_subscription_payments where user_id = '${T}' and status = 'paid'),
+                   current_period_end = (select period_end from public.class_subscription_payments where user_id = '${T}' and status = 'paid') where user_id = '${T}'`);
+  const q = (await api(T, 'upgrade-quote', {})).body;
+  assert.equal(q.ok, true); assert.equal(q.amount, 99000); assert.equal(q.credit, 4900); assert.equal(q.payAmount, 94100); assert.equal(q.daysLeft, 10);
+  const no = await api(T2, 'upgrade-quote', {});
+  assert.equal(no.status, 409); assert.equal(no.body.error, 'no_monthly_subscription');
+  assert.equal((await api(W, 'upgrade-quote', { plan: 'solo' })).body.error, 'no_monthly_subscription');
+});
+
+await check('전환: 금액이 다르면 청구하지 않는다 · 카드가 거절되면 월 구독은 그대로', async () => {
+  const charges = toss.charges;
+  const bad = await api(T, 'upgrade', { expectedAmount: 99000, ...terms });
+  assert.equal(bad.status, 409); assert.equal(bad.body.error, 'amount_mismatch'); assert.equal(bad.body.amount, 94100);
+  toss.decline = true;
+  const d = await api(T, 'upgrade', { expectedAmount: 94100, ...terms });
+  toss.decline = false;
+  assert.equal(d.status, 402); assert.equal(toss.charges, charges);
+  const s = await sub(T);
+  assert.equal(s.cycle, 'month'); assert.equal(s.status, 'active'); assert.equal(s.retry_count, 0, '전환 거절은 연체가 아니다');
+});
+
+await check('전환 결제: 등록된 카드로 94,100원 한 번 · 구독이 연간으로 · 그날부터 1년 · 오즈가 열린다', async () => {
+  const charges = toss.charges;
+  assert.equal(await access(T, 't@example.test', 'oz'), false, '월 구독에는 오즈가 없다');
+  const r = await api(T, 'upgrade', { expectedAmount: 94100, ...terms });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.status, 'paid'); assert.equal(r.body.credit, 4900);
+  assert.equal(toss.charges, charges + 1); assert.equal(toss.lastAmount, 94100);
+  const s = await sub(T);
+  assert.equal(s.cycle, 'year'); assert.equal(s.plan, 'solo'); assert.equal(s.amount, 99000, '다음 갱신은 연간 금액 그대로');
+  assert.equal(monthsBetween(s.current_period_start, s.current_period_end), 12);
+  assert.equal(new Date(s.next_charge_at).getTime(), new Date(s.current_period_end).getTime());
+  assert.equal(await access(T, 't@example.test', 'oz'), true);
+  const again = await api(T, 'upgrade', { expectedAmount: 94100, ...terms });
+  assert.equal(again.status, 409, '이미 연간이면 또 전환할 수 없다'); assert.equal(toss.charges, charges + 1);
+});
+
+await check('회원은 전환·선물 함수를 직접 못 부른다', async () => {
+  await db.exec(`set test.uid = '${T}'; set role authenticated;`);
+  try {
+    await assert.rejects(db.query(`select public.class_subscription_upgrade_begin('${T}', 'solo', 99000, 99000, 0, 'v', 'u', 0)`));
+    await assert.rejects(db.query(`select public.class_subscription_bonus('${T}', 'solo', 'year')`));
+  } finally { await db.exec('reset role;'); }
 });
 
 console.log(`class-subscription-db-test: ${n} checks passed (토스 청구 ${toss.charges}회)`);
