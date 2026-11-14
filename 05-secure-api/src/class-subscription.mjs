@@ -65,9 +65,18 @@ const declined = (code) => !!code && !/TIMEOUT|UNKNOWN|PROVIDER_ERROR|FAILED_INT
 const onceStatus = (e) => e === 'login_required' ? 401 : ['bad_plan', 'bad_points', 'bad_amount', 'bad_payment'].includes(e) ? 400
   : e === 'order_not_found' ? 404 : 409;
 
-/** 기간권(구독 한 기간을 일반 결제 한 번으로) 판매가 열려 있는가 — 자동 결제 스위치와 별개. */
-export function onetimeOpen(env, tm) {
-  return env.CLASS_SUBSCRIPTION_ONETIME_ENABLED === 'true' && !!env.TOSS_CLASS_SECRET_KEY && !!tm;
+/** 기간권 시험 계정 목록(CLASS_SUBSCRIPTION_ONETIME_TESTERS — 쉼표 구분 이메일, 소문자·공백 무시). */
+export function onetimeTesters(env) {
+  return String(env.CLASS_SUBSCRIPTION_ONETIME_TESTERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+/** 기간권(구독 한 기간을 일반 결제 한 번으로) 판매가 이 회원에게 열려 있는가 — 자동 결제 스위치와 별개.
+ *  ONETIME_ENABLED === 'true' 면 모두에게, 아니면 로그인 회원 이메일이 시험 계정 목록에 있을 때만(2026-11-14). 토스 키·약관은 늘 필요. */
+export function onetimeOpen(env, tm, email) {
+  if (!env.TOSS_CLASS_SECRET_KEY || !tm) return false;
+  if (env.CLASS_SUBSCRIPTION_ONETIME_ENABLED === 'true') return true;
+  const e = String(email || '').trim().toLowerCase();
+  return !!e && onetimeTesters(env).includes(e);
 }
 
 export async function classSubscription(req, env, cors, action, { requireUser, sbFetch, json }) {
@@ -101,8 +110,8 @@ export async function classSubscription(req, env, cors, action, { requireUser, s
     if (!user?.id || !user.emailConfirmed) return reply({ ok: false, error: 'login_required' }, 401);
     if (!['quote', 'prepare', 'confirm', 'status', 'cancel', 'upgrade-quote', 'upgrade', 'gift-redeem', 'once-prepare', 'once-confirm'].includes(action)) return reply({ ok: false, error: 'not_found' }, 404);
     const tm = terms(env);
-    const onceOpen = onetimeOpen(env, tm);
-    // 기간권 판매 스위치가 꺼져 있으면 DB·토스를 건드리기 전에 닫는다
+    const onceOpen = onetimeOpen(env, tm, user.email);
+    // 기간권 판매가 이 회원에게 닫혀 있으면(스위치 꺼짐 + 시험 계정 아님) DB·토스를 건드리기 전에 닫는다
     if ((action === 'once-prepare' || action === 'once-confirm') && !onceOpen) return reply({ ok: false, error: 'onetime_closed' }, 503);
     const enabled = env.CLASS_SUBSCRIPTION_ENABLED === 'true' && !!env.TOSS_BILLING_SECRET_KEY && !!env.TOSS_BILLING_CLIENT_KEY && !!tm;
     // 선물 구독권(야나완 성공 선물) — 판매 스위치와 별개. 결제가 없으니 토스 키는 보지 않고, 약관 변수는 있어야 열린다.
@@ -315,7 +324,8 @@ export async function chargeDueSubscriptions(env, { sbFetch, limit = 20 } = {}) 
   const out = { due: 0, paid: 0, failed: 0, pending: 0, expired: 0 };
   if (env.CLASS_SUBSCRIPTION_ENABLED !== 'true' || !env.TOSS_BILLING_SECRET_KEY) {
     // 자동 결제가 꺼져 있어도 기간권·선물 구독은 기간이 끝나면 정리해야 한다(청구는 하지 않는다)
-    if (env.CLASS_SUBSCRIPTION_ONETIME_ENABLED === 'true' || env.CLASS_SUBSCRIPTION_GIFT_ENABLED === 'true') {
+    //   시험 계정만 열린 동안(ONETIME_TESTERS)에도 그 계정의 기간권이 끝나면 정리한다.
+    if (env.CLASS_SUBSCRIPTION_ONETIME_ENABLED === 'true' || onetimeTesters(env).length > 0 || env.CLASS_SUBSCRIPTION_GIFT_ENABLED === 'true') {
       try { out.expired = Number(await client(env, sbFetch).rpc('expire', {})) || 0; } catch { /* 다음 크론이 다시 */ }
     }
     return out;

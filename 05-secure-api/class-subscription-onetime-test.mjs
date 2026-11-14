@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { classSubscription, chargeDueSubscriptions } from './src/class-subscription.mjs';
+import { classSubscription, chargeDueSubscriptions, onetimeOpen, onetimeTesters } from './src/class-subscription.mjs';
 import { subscriptionQuote } from './src/class-subscription-pricing.mjs';
 import entry, { classMidSubscriptionWebhook } from './src/class-subscription-entry.mjs';
 import { processSubscriptionEmails, queueSubscriptionReminders, renderSubscriptionEmail, SUBSCRIPTION_MAIL_COPY } from './src/class-subscription-email.mjs';
@@ -650,6 +650,88 @@ await check('봉투 만들기: 페이지 주소·발신자가 틀리면 보내�
   assert.throws(() => renderSubscriptionEmail({ ...f, email: 'bad' }, MAIL), /mail_configuration/);
   const e = renderSubscriptionEmail({ ...f, kind: 'paid', paymentKind: 'first', periodStart: f.periodEnd, amount: 9900, pointsUsed: 0, bonusMonths: 0, orderId: '<b>' }, MAIL);
   assert.ok(e.html.includes('&lt;b&gt;') && !e.html.includes('<b>'));
+});
+
+// ── 시험 계정만 열기(CLASS_SUBSCRIPTION_ONETIME_TESTERS, 2026-11-14) ──
+const X = '00000000-0000-4000-8000-0000000000c8'; // 시험 계정(목록에 있음) → 기간권 월 개인 끝까지
+await db.exec(`insert into auth.users(id, email) values ('${X}', 'tester@example.test')`);
+// 일반 판매 스위치 없음(= 운영 모양) + 시험 계정 목록
+const TESTERS_ENV = { ...ENV, CLASS_SUBSCRIPTION_ONETIME_ENABLED: undefined, CLASS_SUBSCRIPTION_ONETIME_TESTERS: ' Tester@Example.test , other@example.test ,' };
+const apiAs = async (uid, email, action, body, env) => {
+  const deps = { requireUser: async () => ({ id: uid, email, emailConfirmed: true }), sbFetch, json };
+  const r = await classSubscription(new Request(`https://x/api/class-subscription/${action}`, { method: 'POST', body: JSON.stringify(body || {}) }), env, {}, action, deps);
+  return { status: r.status, body: await r.json() };
+};
+
+await check('onetimeOpen 판정: ENABLED=true 면 모두 · 아니면 목록 회원만(대소문자·공백 무시) · 둘 다 없으면 닫힘 · 키·약관 없으면 시험 계정도 닫힘', async () => {
+  const tm = { url: 'https://class-new.literstella.co.kr/subscribe', version: 'v' };
+  assert.equal(onetimeOpen(TESTERS_ENV, tm, 'tester@example.test'), true);
+  assert.equal(onetimeOpen(TESTERS_ENV, tm, '  TESTER@EXAMPLE.TEST '), true, '대소문자·공백');
+  assert.equal(onetimeOpen(TESTERS_ENV, tm, 'OTHER@example.test'), true, '목록 두 번째');
+  assert.equal(onetimeOpen(TESTERS_ENV, tm, 'nobody@example.test'), false, '목록 밖');
+  assert.equal(onetimeOpen(TESTERS_ENV, tm, ''), false, '이메일 없음');
+  assert.equal(onetimeOpen(TESTERS_ENV, tm, undefined), false, '이메일 모름');
+  assert.equal(onetimeOpen({ ...TESTERS_ENV, CLASS_SUBSCRIPTION_ONETIME_ENABLED: 'true' }, tm, 'nobody@example.test'), true, 'ENABLED=true 면 모두');
+  assert.equal(onetimeOpen({ ...ENV, CLASS_SUBSCRIPTION_ONETIME_ENABLED: undefined }, tm, 'tester@example.test'), false, '둘 다 없으면 닫힘');
+  assert.equal(onetimeOpen({ ...TESTERS_ENV, CLASS_SUBSCRIPTION_ONETIME_TESTERS: ' , ,' }, tm, 'tester@example.test'), false, '빈 목록');
+  assert.equal(onetimeOpen({ ...TESTERS_ENV, CLASS_SUBSCRIPTION_ONETIME_ENABLED: 'TRUE' }, tm, 'nobody@example.test'), false, "'true' 만 연다");
+  assert.equal(onetimeOpen({ ...TESTERS_ENV, TOSS_CLASS_SECRET_KEY: '' }, tm, 'tester@example.test'), false, '토스 키 없으면 시험 계정도 닫힘');
+  assert.equal(onetimeOpen(TESTERS_ENV, null, 'tester@example.test'), false, '약관 없으면 시험 계정도 닫힘');
+  assert.deepEqual(onetimeTesters(TESTERS_ENV), ['tester@example.test', 'other@example.test']);
+  assert.deepEqual(onetimeTesters({}), []);
+});
+
+await check('시험 계정 아님(목록 밖): once-prepare/once-confirm 503 onetime_closed · DB 호출 0 · 상태·견적 onetimeOpen:false', async () => {
+  const before = sbCalls.length;
+  for (const a of ['once-prepare', 'once-confirm']) {
+    const r = await apiAs(V, 'v@example.test', a, { plan: 'solo', cycle: 'month' }, TESTERS_ENV);
+    assert.deepEqual([r.status, r.body.error], [503, 'onetime_closed']);
+  }
+  assert.equal(sbCalls.length, before, '닫혀 있으면 DB 호출 0');
+  assert.equal((await apiAs(V, 'v@example.test', 'status', {}, TESTERS_ENV)).body.onetimeOpen, false);
+  assert.equal((await apiAs(V, 'v@example.test', 'quote', { plan: 'solo', cycle: 'month' }, TESTERS_ENV)).body.onetimeOpen, false);
+  assert.equal((await api(V, 'once-prepare', {}, TESTERS_ENV)).body.error, 'onetime_closed', '이메일을 모르는 회원도 닫힘');
+});
+
+await check('시험 계정(대문자로 와도): 상태·견적 onetimeOpen:true · 기간권 월 개인 견적→주문→승인 끝까지 · 웹훅도 버리지 않는다 · 진입 모듈 경유', async () => {
+  const s = await apiAs(X, 'TESTER@example.test', 'status', {}, TESTERS_ENV);
+  assert.equal(s.body.onetimeOpen, true); assert.equal(s.body.checkoutEnabled, false, '자동 결제는 그대로 꺼져 있다');
+  const q = await apiAs(X, 'tester@example.test', 'quote', { plan: 'solo', cycle: 'month' }, TESTERS_ENV);
+  assert.equal(q.body.onetimeOpen, true);
+  const p = await apiAs(X, 'tester@example.test', 'once-prepare', { plan: 'solo', cycle: 'month', expectedAmount: q.body.amount, acceptedTermsVersion: 'sub-2026-12' }, TESTERS_ENV);
+  assert.equal(p.status, 200, JSON.stringify(p.body));
+  const paymentKey = payInWidget(p.body.orderId, p.body.cardAmount);
+  const c = await apiAs(X, 'tester@example.test', 'once-confirm', { orderId: p.body.orderId, paymentKey, amount: p.body.cardAmount }, TESTERS_ENV);
+  assert.equal(c.status, 200, JSON.stringify(c.body)); assert.equal(c.body.status, 'paid');
+  assert.equal((await sub(X)).billing_mode, 'once');
+  // 웹훅(회원 세션 없음 · 판매 스위치 없음) — 이미 만든 주문은 처리한다
+  const w = await apiAs(null, null, 'webhook', { data: { paymentKey, orderId: p.body.orderId } }, TESTERS_ENV);
+  assert.equal(w.status, 200, JSON.stringify(w.body)); assert.equal(w.body.ok, true);
+  // 클래스 상점 웹훅 경로(/api/class-checkout/webhook)로 와도 같은 처리
+  const mid = await classMidSubscriptionWebhook(new Request('https://api.test/api/class-checkout/webhook', { method: 'POST', body: JSON.stringify({ data: { paymentKey, orderId: p.body.orderId } }) }), TESTERS_ENV);
+  assert.equal(mid.status, 200);
+  // 진입 모듈의 회원 확인이 이메일을 소문자로 넘긴다 — 그 값이 판정에 쓰인다
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => String(url).endsWith('/auth/v1/user')
+    ? json({ id: X, email: 'Tester@Example.TEST', email_confirmed_at: '2026-11-14T00:00:00Z' }) : realFetch(url, init);
+  try {
+    const res = await entry.fetch(new Request('https://api.test/api/class-subscription/status', { method: 'POST',
+      headers: { Origin: 'https://class-new.literstella.co.kr', 'X-User-Token': 't' }, body: '{}' }), TESTERS_ENV, { waitUntil() {} });
+    const b = await res.json();
+    assert.equal(res.status, 200); assert.equal(b.onetimeOpen, true, '진입 모듈 경유로도 시험 계정은 열림');
+    const anon = await entry.fetch(new Request('https://api.test/api/class-subscription/once-prepare', { method: 'POST',
+      headers: { Origin: 'https://class-new.literstella.co.kr' }, body: '{}' }), TESTERS_ENV, { waitUntil() {} });
+    assert.equal(anon.status, 401, '비로그인은 그대로 401');
+  } finally { globalThis.fetch = realFetch; }
+});
+
+await check('크론: 판매 스위치 없이 시험 계정 목록만 있어도 끝난 기간권을 정리한다 · 둘 다 없으면 expire 를 안 부른다', async () => {
+  const calls = () => sbCalls.filter((c) => String(c).includes('class_subscription_expire')).length;
+  const a = calls();
+  await chargeDueSubscriptions(TESTERS_ENV, { sbFetch });
+  assert.equal(calls(), a + 1, '목록만 있어도 expire 호출');
+  await chargeDueSubscriptions({ ...ENV, CLASS_SUBSCRIPTION_ONETIME_ENABLED: undefined }, { sbFetch });
+  assert.equal(calls(), a + 1, '둘 다 없으면 호출 안 함');
 });
 
 console.log(`class-subscription-onetime-test: ${n} checks passed (토스 승인 ${toss.confirms}회 · 빌링 ${toss.billing}회 · 메일 ${mails.length}통)`);

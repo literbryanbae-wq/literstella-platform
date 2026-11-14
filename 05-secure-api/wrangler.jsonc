@@ -69,6 +69,14 @@
     "PRONUNCIATION_PILOT_ACTIVATED_AT": "2026-09-27T21:57:10Z",
     "ETRI_HTTP_PILOT_APPROVED": "true",
     "ETRI_SERVICE_USE_APPROVED": "true",
+    // 구독 기간권(한 번 결제) — 2026-11-14 시험 계정만 연다. 일반 판매를 열 때 CLASS_SUBSCRIPTION_ONETIME_ENABLED 를 "true" 로 더한다
+    //   (지금은 일부러 없다 = 일반 판매 닫힘). 시험 계정 = 운영자·시험 계정 이메일(쉼표 구분, 소문자 비교).
+    "CLASS_SUBSCRIPTION_ONETIME_TESTERS": "literbryanbae@gmail.com,justgotime@kakao.com",
+    // 구독 이용 조건 — 클래스 /subscribe 의 SUBSCRIPTION_TERMS(src/data/annualSubscription.js, 마지막 문안 변경 2026-11-13 · status 'draft').
+    //   화면은 버전을 따로 갖지 않고 서버 status/quote 의 terms.version 을 그대로 돌려보낸다(acceptedTermsVersion) — 정본은 이 값.
+    //   문안을 바꾸면 이 버전도 바꾼다(이미 동의한 회원 기록과 구분된다).
+    "CLASS_SUBSCRIPTION_TERMS_URL": "https://class-new.literstella.co.kr/subscribe",
+    "CLASS_SUBSCRIPTION_TERMS_VERSION": "subscription-terms-draft-2026-11-13",
     // CORS 허용 Origin (쉼표구분) — 프론트 도메인만. 클래스 앱(강독 이관, 2026-07-18) 추가:
     //   class-new=스테이징 · class=컷오버 후 · pages.dev=배포 프리뷰 QA
     "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev,https://english.literstella.co.kr"

@@ -27,7 +27,8 @@ const deps = (env) => ({
     const res = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     const user = await res.json();
-    return { id: user.id, emailConfirmed: !!user.email_confirmed_at };
+    // email = 기간권 시험 계정 판정(CLASS_SUBSCRIPTION_ONETIME_TESTERS)에만 쓴다 — 확인된 토큰의 값만 믿는다.
+    return { id: user.id, email: String(user.email || '').toLowerCase(), emailConfirmed: !!user.email_confirmed_at };
   },
 });
 
