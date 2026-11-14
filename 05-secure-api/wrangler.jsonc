@@ -78,8 +78,11 @@
     "CLASS_SUBSCRIPTION_TERMS_URL": "https://class-new.literstella.co.kr/subscribe#terms",
     "CLASS_SUBSCRIPTION_TERMS_VERSION": "subscription-terms-2026-11-14",
     // 2026-11-14 일반 판매 개시(운영자 "구독판매 지금 열어") — 기간권(한 번 결제)을 모든 회원에게 연다. 자동 결제(CLASS_SUBSCRIPTION_ENABLED)는 토스 빌링 심사 뒤.
-    //   안내 메일(CLASS_SUBSCRIPTION_MAIL_ENABLED)·구독권 선물(CLASS_SUBSCRIPTION_GIFT_ENABLED)은 아직 넣지 않았다(운영자 확인 뒤).
     "CLASS_SUBSCRIPTION_ONETIME_ENABLED": "true",
+    // 같은 날 운영자 "구독권 선물 코드 발급 — 켜" · "모두 진행": 구독권 선물 등록(gift-redeem)과 결제·환불·끝나기 전 안내 메일을 연다.
+    "CLASS_SUBSCRIPTION_GIFT_ENABLED": "true",
+    "CLASS_SUBSCRIPTION_MAIL_ENABLED": "true",
+    "CLASS_SUBSCRIPTION_PAGE_URL": "https://class-new.literstella.co.kr/subscribe",
     // CORS 허용 Origin (쉼표구분) — 프론트 도메인만. 클래스 앱(강독 이관, 2026-07-18) 추가:
     //   class-new=스테이징 · class=컷오버 후 · pages.dev=배포 프리뷰 QA
     "ALLOWED_ORIGINS": "https://challenge.literstella.co.kr,https://read.literstella.co.kr,https://literstella.co.kr,https://class-new.literstella.co.kr,https://class.literstella.co.kr,https://literstella-class.pages.dev,https://english.literstella.co.kr"
